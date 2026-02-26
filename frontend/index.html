@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini-RAG 个人知识库</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1><i class="fas fa-book-open"></i> Mini-RAG</h1>
+                <p class="subtitle">个人知识库</p>
+            </div>
+            
+            <!-- 统计信息 -->
+            <div class="stats-card">
+                <div class="stat-item">
+                    <span class="stat-value" id="totalDocs">0</span>
+                    <span class="stat-label">文档</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="totalTags">0</span>
+                    <span class="stat-label">标签</span>
+                </div>
+            </div>
+            
+            <!-- 标签列表 -->
+            <div class="tags-section">
+                <h3><i class="fas fa-tags"></i> 标签</h3>
+                <div class="tags-list" id="tagsList">
+                    <!-- 动态加载 -->
+                </div>
+            </div>
+            
+            <!-- 新建文档按钮 -->
+            <button class="btn-primary btn-new-doc" onclick="showDocModal()">
+                <i class="fas fa-plus"></i> 新建文档
+            </button>
+        </aside>
+        
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 搜索栏 -->
+            <div class="search-bar">
+                <div class="search-input-wrapper">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="searchInput" placeholder="搜索知识库..." onkeypress="handleSearchKey(event)">
+                    <button class="btn-search" onclick="performSearch()">搜索</button>
+                </div>
+                <div class="search-tabs">
+                    <button class="tab-btn active" onclick="switchTab('documents')">
+                        <i class="fas fa-file-alt"></i> 文档列表
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('search')">
+                        <i class="fas fa-search"></i> 搜索结果
+                    </button>
+                    <button class="tab-btn" onclick="switchTab('qa')">
+                        <i class="fas fa-question-circle"></i> 智能问答
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 文档列表 -->
+            <div class="content-section" id="documentsSection">
+                <div class="section-header">
+                    <h2>文档列表</h2>
+                    <span class="doc-count" id="docCount">共 0 篇文档</span>
+                </div>
+                <div class="documents-grid" id="documentsList">
+                    <!-- 动态加载 -->
+                </div>
+            </div>
+            
+            <!-- 搜索结果 -->
+            <div class="content-section hidden" id="searchSection">
+                <div class="section-header">
+                    <h2>搜索结果</h2>
+                    <span class="result-info" id="searchInfo"></span>
+                </div>
+                <div class="search-results" id="searchResults">
+                    <!-- 动态加载 -->
+                </div>
+            </div>
+            
+            <!-- 智能问答 -->
+            <div class="content-section hidden" id="qaSection">
+                <div class="section-header">
+                    <h2>智能问答</h2>
+                </div>
+                <div class="qa-container">
+                    <div class="qa-input-area">
+                        <textarea id="questionInput" placeholder="输入您的问题，系统将从知识库中查找相关内容..." rows="3"></textarea>
+                        <button class="btn-primary" onclick="askQuestion()">
+                            <i class="fas fa-paper-plane"></i> 提问
+                        </button>
+                    </div>
+                    <div class="qa-answer hidden" id="qaAnswer">
+                        <h3>回答</h3>
+                        <div class="answer-content" id="answerContent"></div>
+                        <div class="answer-sources" id="answerSources">
+                            <h4>参考来源</h4>
+                            <div class="sources-list" id="sourcesList"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- 文档模态框 -->
+    <div class="modal hidden" id="docModal">
+        <div class="modal-overlay" onclick="hideDocModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">新建文档</h3>
+                <button class="btn-close" onclick="hideDocModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="docId">
+                <div class="form-group">
+                    <label for="docTitle">标题</label>
+                    <input type="text" id="docTitle" placeholder="请输入文档标题">
+                </div>
+                <div class="form-group">
+                    <label for="docContent">内容</label>
+                    <textarea id="docContent" placeholder="请输入文档内容..." rows="12"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="docTags">标签 (用逗号分隔)</label>
+                    <input type="text" id="docTags" placeholder="例如: 技术, 编程, Python">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="hideDocModal()">取消</button>
+                <button class="btn-primary" onclick="saveDocument()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 文档详情模态框 -->
+    <div class="modal hidden" id="viewModal">
+        <div class="modal-overlay" onclick="hideViewModal()"></div>
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="viewTitle">文档详情</h3>
+                <button class="btn-close" onclick="hideViewModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="view-meta">
+                    <div class="meta-item">
+                        <i class="fas fa-clock"></i>
+                        <span id="viewTime"></span>
+                    </div>
+                    <div class="meta-item">
+                        <i class="fas fa-tags"></i>
+                        <span id="viewTags"></span>
+                    </div>
+                </div>
+                <div class="view-content" id="viewContent"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-danger" onclick="deleteCurrentDoc()">
+                    <i class="fas fa-trash"></i> 删除
+                </button>
+                <button class="btn-secondary" onclick="hideViewModal()">关闭</button>
+                <button class="btn-primary" onclick="editCurrentDoc()">
+                    <i class="fas fa-edit"></i> 编辑
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast 提示 -->
+    <div class="toast hidden" id="toast"></div>
+    
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
