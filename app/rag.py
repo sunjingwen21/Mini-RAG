@@ -3,9 +3,9 @@ import re
 from typing import List, Tuple, Optional
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
 
-from app.config import CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP
+from app.config import CHROMA_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP
 from app.models import Document, SearchResult
 
 
@@ -80,22 +80,27 @@ class VectorStore:
     
     def __init__(self):
         self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        # 使用默认的嵌入函数（不需要 PyTorch）
+        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
         self.collection = self.client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"}
         )
-        self.embedder = SentenceTransformer(EMBEDDING_MODEL)
         self.splitter = TextSplitter()
     
     def _get_embedding(self, text: str) -> List[float]:
         """获取文本嵌入向量"""
-        embedding = self.embedder.encode(text, convert_to_numpy=True)
-        return embedding.tolist()
+        embedding = self.embedding_function([text])
+        if embedding is not None and len(embedding) > 0:
+            return embedding[0].tolist()
+        return []
     
     def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """批量获取嵌入向量"""
-        embeddings = self.embedder.encode(texts, convert_to_numpy=True)
-        return embeddings.tolist()
+        embeddings = self.embedding_function(texts)
+        if embeddings is not None:
+            return [e.tolist() for e in embeddings]
+        return []
     
     def add_document(self, document: Document) -> int:
         """添加文档到向量存储"""
@@ -119,12 +124,20 @@ class VectorStore:
         
         embeddings = self._get_embeddings(chunks)
         
-        self.collection.add(
-            ids=ids,
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=metadatas
-        )
+        if embeddings:
+            self.collection.add(
+                ids=ids,
+                documents=chunks,
+                embeddings=embeddings,
+                metadatas=metadatas
+            )
+        else:
+            # 如果无法获取嵌入向量，让 ChromaDB 自动处理
+            self.collection.add(
+                ids=ids,
+                documents=chunks,
+                metadatas=metadatas
+            )
         
         return len(chunks)
     
@@ -143,17 +156,23 @@ class VectorStore:
         if results['ids']:
             self.collection.delete(ids=results['ids'])
     
-    def search(self, query: str, limit: int = 5) -> List[Tuple[str, str, float, str, List[str]]]:
+    def search(self, query: str, limit: int = 5) -> List[Tuple[str, str, float, str, str, List[str]]]:
         """
         搜索相似内容
         返回: [(chunk_id, content, score, doc_id, title, tags), ...]
         """
         query_embedding = self._get_embedding(query)
         
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=limit
-        )
+        if query_embedding:
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=limit
+            )
+        else:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=limit
+            )
         
         search_results = []
         
