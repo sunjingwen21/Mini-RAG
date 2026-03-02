@@ -2,12 +2,20 @@
 """
 Mini-RAG 个人知识库启动脚本
 """
+import os
 import uvicorn
 import sys
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def main():
@@ -29,13 +37,18 @@ def main():
     print("=" * 50)
     print()
     
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_dirs=["app"]
-    )
+    debug_mode = _get_bool_env("MINI_RAG_DEBUG", False)
+    run_options = {
+        "app": "app.main:app",
+        "host": "0.0.0.0",
+        "port": 8000,
+        "reload": debug_mode,
+    }
+
+    if debug_mode:
+        run_options["reload_dirs"] = ["app"]
+
+    uvicorn.run(**run_options)
 
 
 if __name__ == "__main__":

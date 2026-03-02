@@ -2,6 +2,14 @@
 import os
 from pathlib import Path
 
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # 项目根目录
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -24,7 +32,15 @@ EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 # 服务器配置
 HOST = "0.0.0.0"
 PORT = 8000
-DEBUG = True
+DEBUG = _get_bool_env("MINI_RAG_DEBUG", False)
+
+# 安全配置
+ADMIN_TOKEN = os.getenv("MINI_RAG_ADMIN_TOKEN", "").strip()
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("MINI_RAG_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 # LLM 配置 (OpenAI 兼容接口)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")

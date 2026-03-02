@@ -9,6 +9,9 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      MINI_RAG_ADMIN_TOKEN: ${MINI_RAG_ADMIN_TOKEN:?MINI_RAG_ADMIN_TOKEN is required}
+      MINI_RAG_DEBUG: ${MINI_RAG_DEBUG:-false}
+      MINI_RAG_CORS_ORIGINS: ${MINI_RAG_CORS_ORIGINS:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}

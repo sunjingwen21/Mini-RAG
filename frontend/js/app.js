@@ -4,6 +4,7 @@
 
 // API 基础地址
 const API_BASE = '';
+const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 
 // 当前查看的文档 ID
 let currentDocId = null;
@@ -11,17 +12,97 @@ let isDeletingDocument = false;
 
 // ==================== 初始化 ====================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    const authenticated = await ensureAuthenticated();
+    if (!authenticated) {
+        return;
+    }
+
     loadStats();
     loadTags();
     loadDocuments();
 });
 
+function getAdminToken() {
+    return localStorage.getItem(AUTH_STORAGE_KEY) || '';
+}
+
+function setAdminToken(token) {
+    localStorage.setItem(AUTH_STORAGE_KEY, token);
+}
+
+function clearAdminToken() {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function promptForAdminToken(force = false) {
+    const message = force ? '访问令牌无效，请重新输入' : '请输入访问令牌';
+    const currentToken = force ? '' : getAdminToken();
+    const provided = window.prompt(message, currentToken);
+
+    if (provided === null) {
+        return '';
+    }
+
+    const token = provided.trim();
+    if (!token) {
+        clearAdminToken();
+        return '';
+    }
+
+    setAdminToken(token);
+    return token;
+}
+
+async function ensureAuthenticated(force = false) {
+    let token = getAdminToken();
+    if (!token || force) {
+        token = promptForAdminToken(force);
+    }
+    return Boolean(token);
+}
+
+function changeAuthToken() {
+    const token = promptForAdminToken(true);
+    if (token) {
+        showToast('访问令牌已更新', 'success');
+    }
+}
+
+async function apiFetch(path, options = {}, retry = true) {
+    let token = getAdminToken();
+    if (!token) {
+        const authenticated = await ensureAuthenticated();
+        if (!authenticated) {
+            throw new Error('未提供访问令牌');
+        }
+        token = getAdminToken();
+    }
+
+    const headers = new Headers(options.headers || {});
+    headers.set('X-Admin-Token', token);
+
+    const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers
+    });
+
+    if (response.status === 401 && retry) {
+        clearAdminToken();
+        const authenticated = await ensureAuthenticated(true);
+        if (authenticated) {
+            return apiFetch(path, options, false);
+        }
+    }
+
+    return response;
+}
+
 // ==================== 统计信息 ====================
 
 async function loadStats() {
     try {
-        const response = await fetch(`${API_BASE}/api/stats`);
+        const response = await apiFetch('/api/stats');
         const data = await response.json();
 
         document.getElementById('totalDocs').textContent = data.total_documents;
@@ -35,7 +116,7 @@ async function loadStats() {
 
 async function loadTags() {
     try {
-        const response = await fetch(`${API_BASE}/api/tags`);
+        const response = await apiFetch('/api/tags');
         const tags = await response.json();
 
         const tagsList = document.getElementById('tagsList');
@@ -66,7 +147,7 @@ function filterByTag(tag) {
 
 async function loadDocuments() {
     try {
-        const response = await fetch(`${API_BASE}/api/documents?limit=50`);
+        const response = await apiFetch('/api/documents?limit=50');
         const data = await response.json();
 
         const documentsList = document.getElementById('documentsList');
@@ -102,7 +183,7 @@ async function loadDocuments() {
 
 async function viewDocument(docId) {
     try {
-        const response = await fetch(`${API_BASE}/api/documents/${docId}`);
+        const response = await apiFetch(`/api/documents/${docId}`);
         if (!response.ok) {
             throw new Error('加载失败');
         }
@@ -171,13 +252,13 @@ async function saveDocument() {
     try {
         let response;
         if (docId) {
-            response = await fetch(`${API_BASE}/api/documents/${docId}`, {
+            response = await apiFetch(`/api/documents/${docId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
         } else {
-            response = await fetch(`${API_BASE}/api/documents`, {
+            response = await apiFetch('/api/documents', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -212,7 +293,7 @@ async function deleteCurrentDoc() {
     removeDocumentFromUI(docIdToDelete);
 
     try {
-        const response = await fetch(`${API_BASE}/api/documents/${docIdToDelete}`, {
+        const response = await apiFetch(`/api/documents/${docIdToDelete}`, {
             method: 'DELETE'
         });
 
@@ -295,7 +376,7 @@ async function performSearch() {
     `;
 
     try {
-        const response = await fetch(`${API_BASE}/api/search`, {
+        const response = await apiFetch('/api/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, limit: 10 })
@@ -357,7 +438,7 @@ async function askQuestion() {
     sourcesList.innerHTML = '';
 
     try {
-        const response = await fetch(`${API_BASE}/api/ask`, {
+        const response = await apiFetch('/api/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question, context_limit: 3 })
@@ -502,7 +583,7 @@ async function showSettingsModal() {
     document.getElementById('settingsModal').classList.remove('hidden');
     // 获取当前配置
     try {
-        const response = await fetch(`${API_BASE}/api/settings`);
+        const response = await apiFetch('/api/settings');
         const settings = await response.json();
 
         document.getElementById('settingBaseUrl').value = settings.llm_base_url || '';
@@ -539,11 +620,6 @@ async function saveSettings() {
     const apiKey = document.getElementById('settingApiKey').value.trim();
     const modelName = document.getElementById('settingModelName').value.trim();
 
-    if (!apiKey) {
-        showToast('API Key 不能为空', 'error');
-        return;
-    }
-
     // 显示保存中...
     const saveBtn = document.querySelector('#settingsModal .btn-primary');
     const originalText = saveBtn.textContent;
@@ -551,7 +627,7 @@ async function saveSettings() {
     saveBtn.disabled = true;
 
     try {
-        const response = await fetch(`${API_BASE}/api/settings`, {
+        const response = await apiFetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

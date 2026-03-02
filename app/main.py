@@ -1,8 +1,9 @@
 """FastAPI 主应用"""
+import secrets
 from typing import List
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
@@ -15,32 +16,63 @@ from pydantic import BaseModel
 from app.database import document_store
 from app.settings import settings_manager
 from app.rag import rag_engine
-from app.config import DEBUG
+from app.config import ADMIN_TOKEN, CORS_ORIGINS, DEBUG
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Mini-RAG 个人知识库",
     description="一个轻量级的个人知识库系统，支持文档管理、语义搜索和智能问答",
     version="1.0.0",
-    debug=DEBUG
+    debug=DEBUG,
+    docs_url="/docs" if DEBUG else None,
+    redoc_url="/redoc" if DEBUG else None,
+    openapi_url="/openapi.json" if DEBUG else None
 )
 
 # 配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-Admin-Token"],
 )
 
 # 静态文件目录
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
+@app.middleware("http")
+async def require_admin_token(request: Request, call_next):
+    """保护所有 API 路由。"""
+    if request.url.path.startswith("/api/"):
+        provided_token = (
+            request.headers.get("x-admin-token")
+            or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        )
+
+        if not ADMIN_TOKEN:
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "服务端未配置 MINI_RAG_ADMIN_TOKEN"}
+            )
+
+        if not provided_token or not secrets.compare_digest(provided_token, ADMIN_TOKEN):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未授权访问"},
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+    return await call_next(request)
+
+
 @app.on_event("startup")
 async def sync_vector_index():
     """启动时根据主文档存储重建向量索引，避免 JSON 与 Chroma 脱节。"""
+    if not ADMIN_TOKEN:
+        raise RuntimeError("缺少 MINI_RAG_ADMIN_TOKEN，拒绝在未启用鉴权的情况下启动")
+
     indexed_chunks = rag_engine.rebuild_index(document_store.get_all())
     print(f"向量索引已同步，共 {indexed_chunks} 个分块")
 
@@ -242,18 +274,29 @@ class SettingsRequest(BaseModel):
 
 @app.get("/api/settings", summary="获取当前大模型设置")
 async def get_settings():
-    return settings_manager.get_settings()
+    current_settings = settings_manager.get_settings()
+    current_settings["has_llm_api_key"] = bool(current_settings.get("llm_api_key"))
+    current_settings["has_embedding_api_key"] = bool(current_settings.get("embedding_api_key"))
+    current_settings["llm_api_key"] = ""
+    current_settings["embedding_api_key"] = ""
+    return current_settings
 
 @app.post("/api/settings", response_model=MessageResponse, summary="更新大模型设置")
 async def update_settings(settings: SettingsRequest):
-    success = settings_manager.save_settings({
+    settings_payload = {
         "llm_base_url": settings.llm_base_url,
-        "llm_api_key": settings.llm_api_key,
         "llm_model": settings.llm_model,
         "embedding_base_url": settings.embedding_base_url,
-        "embedding_api_key": settings.embedding_api_key,
         "embedding_model": settings.embedding_model
-    })
+    }
+
+    if settings.llm_api_key.strip():
+        settings_payload["llm_api_key"] = settings.llm_api_key
+
+    if settings.embedding_api_key.strip():
+        settings_payload["embedding_api_key"] = settings.embedding_api_key
+
+    success = settings_manager.save_settings(settings_payload)
     
     if not success:
         raise HTTPException(status_code=500, detail="保存设置失败")
