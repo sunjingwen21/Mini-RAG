@@ -245,10 +245,54 @@
         </div>
     </div>
 
+    <!-- 访问令牌模态框 -->
+    <div class="modal hidden" id="authModal">
+        <div class="modal-overlay" onclick="cancelAuthModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="authModalTitle">输入访问令牌</h3>
+                <button class="btn-close" onclick="cancelAuthModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="authModalMessage" style="margin-bottom: 16px; color: var(--text-secondary);">请输入访问令牌以继续访问知识库。</p>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="authTokenInput">访问令牌</label>
+                    <input type="password" id="authTokenInput" placeholder="请输入访问令牌" onkeydown="handleAuthTokenKey(event)">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="cancelAuthModal()">取消</button>
+                <button class="btn-primary" onclick="submitAuthModal()">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通用确认模态框 -->
+    <div class="modal hidden" id="confirmModal">
+        <div class="modal-overlay" onclick="resolveConfirmModal(false)"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="confirmModalTitle">确认操作</h3>
+                <button class="btn-close" onclick="resolveConfirmModal(false)">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmModalMessage" style="color: var(--text-secondary);">请确认是否继续。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="resolveConfirmModal(false)">取消</button>
+                <button class="btn-primary" onclick="resolveConfirmModal(true)">继续</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast 提示 -->
     <div class="toast hidden" id="toast"></div>
 
-    <script src="/static/js/app.js?v=1.0.7"></script>
+    <script src="/static/js/app.js?v=1.0.8"></script>
 </body>
 
 </html>

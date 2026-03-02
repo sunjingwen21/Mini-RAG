@@ -9,6 +9,8 @@ const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 // 当前查看的文档 ID
 let currentDocId = null;
 let isDeletingDocument = false;
+let authModalResolver = null;
+let confirmModalResolver = null;
 
 // ==================== 初始化 ====================
 
@@ -35,38 +37,40 @@ function clearAdminToken() {
     localStorage.removeItem(AUTH_STORAGE_KEY);
 }
 
-function promptForAdminToken(force = false) {
-    const message = force ? '访问令牌无效，请重新输入' : '请输入访问令牌';
+function showAuthModal(force = false) {
+    const modal = document.getElementById('authModal');
+    const message = document.getElementById('authModalMessage');
+    const input = document.getElementById('authTokenInput');
+    const title = document.getElementById('authModalTitle');
     const currentToken = force ? '' : getAdminToken();
-    const provided = window.prompt(message, currentToken);
 
-    if (provided === null) {
-        return '';
-    }
+    title.textContent = force ? '访问令牌失效' : '输入访问令牌';
+    message.textContent = force ? '访问令牌无效，请重新输入。' : '请输入访问令牌以继续访问知识库。';
+    input.value = currentToken;
 
-    const token = provided.trim();
-    if (!token) {
-        clearAdminToken();
-        return '';
-    }
+    modal.classList.remove('hidden');
 
-    setAdminToken(token);
-    return token;
+    setTimeout(() => input.focus(), 0);
+
+    return new Promise(resolve => {
+        authModalResolver = resolve;
+    });
 }
 
 async function ensureAuthenticated(force = false) {
     let token = getAdminToken();
     if (!token || force) {
-        token = promptForAdminToken(force);
+        token = await showAuthModal(force);
     }
     return Boolean(token);
 }
 
 function changeAuthToken() {
-    const token = promptForAdminToken(true);
-    if (token) {
-        showToast('访问令牌已更新', 'success');
-    }
+    showAuthModal(true).then(token => {
+        if (token) {
+            showToast('访问令牌已更新', 'success');
+        }
+    });
 }
 
 async function apiFetch(path, options = {}, retry = true) {
@@ -441,7 +445,10 @@ async function askQuestion() {
         let data = await requestAnswer(question, false);
 
         if (data.needs_model_confirmation) {
-            const shouldContinue = confirm('知识库并不包含相关资料，是否调用模型继续询问？');
+            const shouldContinue = await showConfirmModal(
+                '知识库并不包含相关资料，是否调用模型继续询问？',
+                '继续提问'
+            );
 
             if (shouldContinue) {
                 answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在调用模型...</div>';
@@ -688,5 +695,67 @@ async function saveSettings() {
     } finally {
         saveBtn.textContent = originalText;
         saveBtn.disabled = false;
+    }
+}
+
+function submitAuthModal() {
+    const input = document.getElementById('authTokenInput');
+    const token = input.value.trim();
+
+    if (!token) {
+        clearAdminToken();
+        if (authModalResolver) {
+            const resolve = authModalResolver;
+            authModalResolver = null;
+            hideAuthModal();
+            resolve('');
+        }
+        return;
+    }
+
+    setAdminToken(token);
+    if (authModalResolver) {
+        const resolve = authModalResolver;
+        authModalResolver = null;
+        hideAuthModal();
+        resolve(token);
+    }
+}
+
+function cancelAuthModal() {
+    if (authModalResolver) {
+        const resolve = authModalResolver;
+        authModalResolver = null;
+        hideAuthModal();
+        resolve('');
+    }
+}
+
+function hideAuthModal() {
+    document.getElementById('authModal').classList.add('hidden');
+}
+
+function handleAuthTokenKey(event) {
+    if (event.key === 'Enter') {
+        submitAuthModal();
+    }
+}
+
+function showConfirmModal(message, title = '确认操作') {
+    document.getElementById('confirmModalTitle').textContent = title;
+    document.getElementById('confirmModalMessage').textContent = message;
+    document.getElementById('confirmModal').classList.remove('hidden');
+
+    return new Promise(resolve => {
+        confirmModalResolver = resolve;
+    });
+}
+
+function resolveConfirmModal(result) {
+    if (confirmModalResolver) {
+        const resolve = confirmModalResolver;
+        confirmModalResolver = null;
+        document.getElementById('confirmModal').classList.add('hidden');
+        resolve(result);
     }
 }
