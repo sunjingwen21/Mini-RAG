@@ -510,29 +510,26 @@ async function askQuestion() {
 
 function renderAnswerMeta(data) {
     const answerMeta = document.getElementById('answerMeta');
-    const items = [];
+    const messages = [];
 
     if (data.used_model_fallback) {
-        items.push('<span class="answer-meta-badge answer-meta-fallback">本次为通用模型回答</span>');
+        const modelSuffix = data.model_name ? `（模型：${data.model_name}）` : '';
+        messages.push(`本次为通用模型回答${modelSuffix}`);
     } else if (data.knowledge_found) {
-        items.push('<span class="answer-meta-badge answer-meta-knowledge">本次基于知识库回答</span>');
-    }
-
-    if (data.model_name) {
-        items.push(`<span class="answer-meta-badge">调用模型：${escapeHtml(data.model_name)}</span>`);
+        messages.push('本次基于知识库回答');
     }
 
     if (data.answer_truncated) {
-        items.push('<span class="answer-meta-badge answer-meta-warning">回答较长，当前结果可能仍未完整</span>');
+        messages.push('回答较长，当前结果可能仍未完整');
     }
 
-    if (items.length === 0) {
+    if (messages.length === 0) {
         answerMeta.classList.add('hidden');
-        answerMeta.innerHTML = '';
+        answerMeta.textContent = '';
         return;
     }
 
-    answerMeta.innerHTML = items.join('');
+    answerMeta.textContent = messages.join('；');
     answerMeta.classList.remove('hidden');
 }
 
