@@ -1,8 +1,6 @@
 """Logging configuration for Mini-RAG."""
 import logging
 import logging.config
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Any, Dict
 
 from app.config import LOG_DIR, LOG_LEVEL

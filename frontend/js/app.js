@@ -9,6 +9,7 @@ const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 // 当前查看的文档 ID
 let currentDocId = null;
 let isDeletingDocument = false;
+let isAskingQuestion = false;
 let authModalResolver = null;
 let confirmModalResolver = null;
 
@@ -427,15 +428,27 @@ async function performSearch() {
 
 async function askQuestion() {
     const question = document.getElementById('questionInput').value.trim();
+    const askButton = document.getElementById('askQuestionBtn');
 
     if (!question) {
         showToast('请输入问题', 'error');
         return;
     }
 
+    if (isAskingQuestion) {
+        return;
+    }
+
     const qaAnswer = document.getElementById('qaAnswer');
     const answerContent = document.getElementById('answerContent');
     const sourcesList = document.getElementById('sourcesList');
+    const originalButtonHtml = askButton ? askButton.innerHTML : '';
+
+    isAskingQuestion = true;
+    if (askButton) {
+        askButton.disabled = true;
+        askButton.innerHTML = '<i class="fas fa-spinner"></i> 处理中...';
+    }
 
     qaAnswer.classList.remove('hidden');
     answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在思考...</div>';
@@ -477,6 +490,12 @@ async function askQuestion() {
     } catch (error) {
         console.error('问答失败:', error);
         answerContent.innerHTML = '<p style="color: var(--danger-color);">问答失败，请稍后重试</p>';
+    } finally {
+        isAskingQuestion = false;
+        if (askButton) {
+            askButton.disabled = false;
+            askButton.innerHTML = originalButtonHtml;
+        }
     }
 }
 

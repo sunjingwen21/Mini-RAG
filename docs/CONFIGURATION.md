@@ -43,6 +43,11 @@ LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=gpt-3.5-turbo
 LLM_EMBEDDING_MODEL=text-embedding-3-small
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_TOKENS_CONTEXT=1200
+LLM_MAX_TOKENS_FALLBACK=800
+
+MINI_RAG_LOG_LEVEL=INFO
 ```
 
 ## Variable Reference
@@ -117,6 +122,40 @@ Optional. Remote embedding model name when remote embedding is enabled.
 
 If you do not configure remote embedding, the project falls back to local hashed embeddings.
 
+### `LLM_TIMEOUT_SECONDS`
+
+Optional. Timeout for upstream LLM requests.
+
+- Lower this if the provider often hangs
+- Higher values may increase perceived wait time
+
+### `LLM_MAX_TOKENS_CONTEXT`
+
+Optional. Maximum tokens for knowledge-based answers.
+
+- Lower values usually return faster
+- Higher values allow longer, more detailed answers
+
+### `LLM_MAX_TOKENS_FALLBACK`
+
+Optional. Maximum tokens for general-model fallback answers when the knowledge base has no hit.
+
+### `MINI_RAG_LOG_LEVEL`
+
+Optional. Application log level.
+
+Common values:
+
+```env
+MINI_RAG_LOG_LEVEL=INFO
+```
+
+or
+
+```env
+MINI_RAG_LOG_LEVEL=DEBUG
+```
+
 ## Linux Note
 
 If you use `start.sh`, the script will:
@@ -124,6 +163,9 @@ If you use `start.sh`, the script will:
 - create `venv` automatically if missing
 - install dependencies automatically if needed
 - refuse to start if `MINI_RAG_ADMIN_TOKEN` is not set
+- run the service in the background
+- write logs to `log/app.log`, `log/access.log`, and `log/launcher.log`
+- store the running PID in `log/minirag.pid`
 
 `stop.sh` is the standard Linux stop script. `stop.py` remains available as an alternate helper, and both use `pkill` to stop the running service.
 

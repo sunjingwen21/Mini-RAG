@@ -43,6 +43,11 @@ LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=gpt-3.5-turbo
 LLM_EMBEDDING_MODEL=text-embedding-3-small
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_TOKENS_CONTEXT=1200
+LLM_MAX_TOKENS_FALLBACK=800
+
+MINI_RAG_LOG_LEVEL=INFO
 ```
 
 ## 配置项说明
@@ -117,6 +122,40 @@ LLM_MODEL=gpt-4o-mini
 
 如果不配置远程 Embedding，本项目会自动回退到本地哈希向量。
 
+### `LLM_TIMEOUT_SECONDS`
+
+可选。上游大模型请求超时时间（秒）。
+
+- 如果上游接口经常卡住，可以适当调低
+- 如果设置过大，等待体感会更明显
+
+### `LLM_MAX_TOKENS_CONTEXT`
+
+可选。知识库命中时的最大输出长度。
+
+- 值越小，通常返回越快
+- 值越大，回答可以更长
+
+### `LLM_MAX_TOKENS_FALLBACK`
+
+可选。知识库未命中、转为通用模型回答时的最大输出长度。
+
+### `MINI_RAG_LOG_LEVEL`
+
+可选。应用日志级别。
+
+常用值：
+
+```env
+MINI_RAG_LOG_LEVEL=INFO
+```
+
+或：
+
+```env
+MINI_RAG_LOG_LEVEL=DEBUG
+```
+
 ## Linux 说明
 
 如果你使用 `start.sh`，脚本会自动：
@@ -124,6 +163,9 @@ LLM_MODEL=gpt-4o-mini
 - 在缺少 `venv` 时创建虚拟环境
 - 在缺少依赖时安装依赖
 - 未配置 `MINI_RAG_ADMIN_TOKEN` 时拒绝启动
+- 以后台方式启动服务
+- 将日志写入 `log/app.log`、`log/access.log` 和 `log/launcher.log`
+- 将进程 PID 写入 `log/minirag.pid`
 
 `stop.sh` 是标准的 Linux 停止脚本。`stop.py` 仍可作为备用入口，二者都通过 `pkill` 停止运行中的服务。
 

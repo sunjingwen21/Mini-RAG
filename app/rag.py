@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import shutil
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
@@ -460,8 +461,6 @@ class RAGEngine:
                 return self._generate_general_answer(question, client, model_name)
             except Exception as e:
                 logger.exception("LLM 生成失败: %s", e)
-                import traceback
-                traceback.print_exc()
                 if contexts:
                     return self._generate_fallback_answer(question, contexts)
                 return "知识库中没有找到相关信息，大模型调用也失败了，请稍后重试。"
@@ -510,6 +509,96 @@ class RAGEngine:
 
         return False
 
+    def _merge_completion_text(self, first_part: str, second_part: str) -> str:
+        """拼接两段模型输出，尽量避免生硬断行。"""
+        if not first_part:
+            return second_part or ""
+        if not second_part:
+            return first_part
+
+        if first_part.endswith(("\n", " ", "\t")) or second_part.startswith(("\n", " ", "\t")):
+            return f"{first_part}{second_part}"
+
+        return f"{first_part}\n{second_part}"
+
+    def _create_chat_completion(
+        self,
+        client: OpenAI,
+        model_name: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        log_label: str
+    ) -> str:
+        """执行一次对话补全，并在长度截断时自动续写一次。"""
+        started_at = time.perf_counter()
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=max_tokens
+        )
+        elapsed = time.perf_counter() - started_at
+
+        choice = response.choices[0] if response.choices else None
+        message = getattr(choice, "message", None)
+        content = (getattr(message, "content", None) or "").strip()
+        finish_reason = getattr(choice, "finish_reason", None)
+        logger.info(
+            "LLM %s completion finished in %.2fs (finish_reason=%s)",
+            log_label,
+            elapsed,
+            finish_reason or "unknown",
+        )
+
+        if finish_reason != "length":
+            return content
+
+        logger.warning(
+            "LLM %s completion hit max_tokens=%d and was truncated, requesting one continuation",
+            log_label,
+            max_tokens,
+        )
+
+        continuation_messages = messages + [
+            {"role": "assistant", "content": content},
+            {
+                "role": "user",
+                "content": "请从刚才中断的位置继续回答，不要重复已经输出的内容，直接续写并完整结束。"
+            }
+        ]
+
+        started_at = time.perf_counter()
+        continuation_response = client.chat.completions.create(
+            model=model_name,
+            messages=continuation_messages,
+            temperature=0.2,
+            max_tokens=max_tokens
+        )
+        continuation_elapsed = time.perf_counter() - started_at
+
+        continuation_choice = continuation_response.choices[0] if continuation_response.choices else None
+        continuation_message = getattr(continuation_choice, "message", None)
+        continuation_content = (getattr(continuation_message, "content", None) or "").strip()
+        continuation_finish_reason = getattr(continuation_choice, "finish_reason", None)
+        logger.info(
+            "LLM %s continuation finished in %.2fs (finish_reason=%s)",
+            log_label,
+            continuation_elapsed,
+            continuation_finish_reason or "unknown",
+        )
+
+        merged_content = self._merge_completion_text(content, continuation_content)
+        if continuation_finish_reason == "length":
+            logger.warning(
+                "LLM %s continuation also hit max_tokens=%d; returning truncated content with notice",
+                log_label,
+                max_tokens,
+            )
+            notice = "\n\n[回答达到长度上限，内容可能未完整生成。请缩小问题范围，或在 .env 中提高 LLM_MAX_TOKENS_* 配置。]"
+            return f"{merged_content.rstrip()}{notice}"
+
+        return merged_content
+
     def _generate_contextual_answer(
         self,
         question: str,
@@ -532,17 +621,16 @@ class RAGEngine:
             "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
         )
         user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
-
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
+        return self._create_chat_completion(
+            client,
+            model_name,
+            [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.2,
-            max_tokens=LLM_MAX_TOKENS_CONTEXT
+            LLM_MAX_TOKENS_CONTEXT,
+            "contextual",
         )
-        return response.choices[0].message.content
 
     def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> str:
         """知识库未命中时，使用通用模型回答。"""
@@ -552,17 +640,16 @@ class RAGEngine:
             "请直接回答用户问题，但必须明确说明这次回答不是来自知识库，而是通用模型回答。"
             "请使用清晰的 Markdown 格式。"
         )
-
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
+        return self._create_chat_completion(
+            client,
+            model_name,
+            [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question}
             ],
-            temperature=0.2,
-            max_tokens=LLM_MAX_TOKENS_FALLBACK
+            LLM_MAX_TOKENS_FALLBACK,
+            "fallback",
         )
-        return response.choices[0].message.content
 
     def _generate_fallback_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """回退方案：如果未配置LLM或调用失败，返回简单的匹配结果"""

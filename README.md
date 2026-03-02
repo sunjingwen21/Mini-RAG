@@ -53,6 +53,7 @@ MINI_RAG_CORS_ORIGINS=http://localhost:8000
 
 说明:
 - `start.sh` 会自动读取项目根目录的 `.env`
+- `start.sh` 会以后台方式启动服务，并把日志统一写到 `log/`
 - 浏览器第一次打开页面时，会提示输入这个访问令牌
 - 公网部署时，把 `MINI_RAG_CORS_ORIGINS` 改成你的实际域名，例如 `https://rag.example.com`
 - 更完整的配置说明见 `docs/CONFIGURATION.md`
@@ -60,20 +61,28 @@ MINI_RAG_CORS_ORIGINS=http://localhost:8000
 
 ### 启动服务
 
-**方式一：命令行启动**
+**方式一：前台启动（调试）**
 ```bash
 python run.py
 ```
 
-**方式二：Linux 启动脚本**
+**方式二：后台启动（推荐）**
 ```bash
 bash start.sh
+```
+
+查看日志：
+
+```bash
+tail -f log/app.log
+tail -f log/access.log
+tail -f log/launcher.log
 ```
 
 ### 停止服务
 
 **方式一：快捷键停止**
-- 在运行终端按 `Ctrl + C`
+- 仅在前台运行 `python run.py` 时使用 `Ctrl + C`
 
 **方式二：命令行停止**
 ```bash

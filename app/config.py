@@ -1,7 +1,6 @@
 """配置文件"""
 import os
 from pathlib import Path
-import logging
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
