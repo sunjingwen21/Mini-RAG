@@ -2,40 +2,53 @@
 """
 Mini-RAG 个人知识库启动脚本
 """
+import os
 import uvicorn
 import sys
+import logging
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from app.config import DEBUG, HOST, PORT
+from app.logging_config import configure_logging
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 
 def main():
     """启动服务器"""
-    print("=" * 50)
-    print("🚀 Mini-RAG 个人知识库")
-    print("=" * 50)
-    print()
-    print("📌 功能特点:")
-    print("   • 文档管理 - 创建、编辑、删除文档")
-    print("   • 语义搜索 - 基于向量相似度的智能搜索")
-    print("   • 智能问答 - 基于知识库的问答功能")
-    print("   • 标签分类 - 支持标签管理和分类")
-    print()
-    print("🌐 访问地址: http://localhost:8000")
-    print("📚 API 文档: http://localhost:8000/docs")
-    print()
-    print("按 Ctrl+C 停止服务器")
-    print("=" * 50)
-    print()
-    
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_dirs=["app"]
-    )
+    log_config = configure_logging()
+    logger = logging.getLogger("minirag.run")
+    debug_mode = _get_bool_env("MINI_RAG_DEBUG", DEBUG)
+
+    logger.info("=" * 50)
+    logger.info("Mini-RAG startup")
+    logger.info("Features: document management, semantic search, QA, tag management")
+    logger.info("Server address: http://%s:%s", HOST, PORT)
+    logger.info("Debug mode: %s", debug_mode)
+    if debug_mode:
+        logger.info("Docs address: http://%s:%s/docs", HOST, PORT)
+    logger.info("=" * 50)
+
+    run_options = {
+        "app": "app.main:app",
+        "host": HOST,
+        "port": PORT,
+        "reload": debug_mode,
+        "log_config": log_config,
+    }
+
+    if debug_mode:
+        run_options["reload_dirs"] = ["app"]
+
+    uvicorn.run(**run_options)
 
 
 if __name__ == "__main__":

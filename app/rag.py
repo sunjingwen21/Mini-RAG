@@ -1,13 +1,24 @@
 """RAG 核心逻辑"""
 import hashlib
+import logging
 import math
 import re
 import shutil
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-from app.config import CHROMA_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP, LLM_EMBEDDING_MODEL
+from app.config import (
+    CHROMA_DIR,
+    COLLECTION_NAME,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    LLM_EMBEDDING_MODEL,
+    LLM_TIMEOUT_SECONDS,
+    LLM_MAX_TOKENS_CONTEXT,
+    LLM_MAX_TOKENS_FALLBACK,
+)
 from app.models import Document, SearchResult
 from app.settings import settings_manager
 from openai import OpenAI
@@ -16,6 +27,14 @@ try:
     import jieba
 except Exception:
     jieba = None
+
+logger = logging.getLogger("minirag.rag")
+
+
+MATCH_STOPWORDS = {
+    "什么", "是", "吗", "呢", "啊", "呀", "的", "了", "和", "与", "及", "请", "一下",
+    "介绍", "一下子", "请问", "how", "what", "is", "are", "the", "a", "an"
+}
 
 
 class TextSplitter:
@@ -154,7 +173,7 @@ class VectorStore:
         try:
             self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         except Exception as e:
-            print(f"检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: {e}")
+            logger.warning("检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: %s", e)
             shutil.rmtree(CHROMA_DIR, ignore_errors=True)
             CHROMA_DIR.mkdir(parents=True, exist_ok=True)
             self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
@@ -172,11 +191,11 @@ class VectorStore:
         embed_model = (settings.get("embedding_model") or "").strip()
 
         if not any([embed_api_key, embed_base_url, embed_model]):
-            print("未配置独立 Embedding 服务，使用本地分词哈希向量")
+            logger.info("未配置独立 Embedding 服务，使用本地分词哈希向量")
             return LocalHashEmbeddingFunction()
 
         if not embed_api_key:
-            print("Embedding API Key 未配置，使用本地分词哈希向量")
+            logger.warning("Embedding API Key 未配置，使用本地分词哈希向量")
             return LocalHashEmbeddingFunction()
 
         try:
@@ -186,10 +205,10 @@ class VectorStore:
                 model_name=embed_model or LLM_EMBEDDING_MODEL
             )
             candidate(["test"])
-            print("已启用远端 Embedding 服务")
+            logger.info("已启用远端 Embedding 服务")
             return candidate
         except Exception as e:
-            print(f"Embedding 服务不可用，转为本地分词哈希向量: {e}")
+            logger.warning("Embedding 服务不可用，转为本地分词哈希向量: %s", e)
             return LocalHashEmbeddingFunction()
 
     def _create_collection(self):
@@ -369,7 +388,8 @@ class RAGEngine:
     
     def __init__(self):
         self.vector_store = VectorStore()
-        # 将在此处移除固定客户端，改为在问答时动态初始化
+        self._llm_client = None
+        self._llm_client_cache_key: Tuple[str, str] = ("", "")
     
     def index_document(self, document: Document) -> int:
         """索引文档"""
@@ -406,62 +426,230 @@ class RAGEngine:
                 ))
         
         return search_results
+
+    def _get_llm_client(self, api_key: str, base_url: str) -> OpenAI:
+        cache_key = (api_key, base_url or "")
+        if self._llm_client is not None and self._llm_client_cache_key == cache_key:
+            return self._llm_client
+
+        self._llm_client = OpenAI(
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+        self._llm_client_cache_key = cache_key
+        logger.info("LLM client initialized for base_url=%s", base_url or "default")
+        return self._llm_client
     
     def generate_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """基于上下文生成答案"""
-        if not contexts:
-            return "抱歉，我在知识库中没有找到相关的信息来回答您的问题。"
-        
-        # 构建参考内容文本
-        context_texts = []
-        for i, ctx in enumerate(contexts, 1):
-            context_texts.append(f"【参考资料 {i}】标题: {ctx.title}\n内容: {ctx.content}")
-        
-        context_str = "\n\n".join(context_texts)
-        
         # 动态读取当前配置
         settings = settings_manager.get_settings()
         api_key = settings.get("llm_api_key", "")
         base_url = settings.get("llm_base_url", "")
         model_name = settings.get("llm_model", "gpt-3.5-turbo")
-        
+
         if api_key:
             try:
-                # 每次生成答案时动态初始化，以适应动态密钥切换
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=base_url if base_url else None
-                )
-                
-                # 使用 LLM 生成答案
-                system_prompt = (
-                    "你是一个专业、严谨且有用的个人知识库助手。"
-                    "请严格基于以下供参考的上下文信息来回答用户的问题。"
-                    "如果上下文信息不足以回答问题，请如实说明无法根据现有知识库回答，不要编造信息。"
-                    "重要排版与引用规则："
-                    "1. 必须使用 Markdown 格式(如加粗、列表、代码块)使回答结构清晰、层次分明、易于阅读。"
-                    "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
-                )
-                
-                user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
-                
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=2000
-                )
-                return response.choices[0].message.content
+                client = self._get_llm_client(api_key, base_url)
+
+                if contexts:
+                    logger.info("Generating contextual answer with %d knowledge source(s)", len(contexts))
+                    return self._generate_contextual_answer(question, contexts, client, model_name)
+
+                logger.info("Knowledge miss confirmed, using LLM general fallback")
+                return self._generate_general_answer(question, client, model_name)
             except Exception as e:
-                print(f"LLM 生成失败: {e}")
-                import traceback
-                traceback.print_exc()
-                return self._generate_fallback_answer(question, contexts)
-        else:
+                logger.exception("LLM 生成失败: %s", e)
+                if contexts:
+                    return self._generate_fallback_answer(question, contexts)
+                return "知识库中没有找到相关信息，大模型调用也失败了，请稍后重试。"
+
+        if contexts:
             return self._generate_fallback_answer(question, contexts)
+
+        return "知识库中没有找到相关信息，且当前未配置大模型，无法继续基于通用知识回答。"
+
+    def _tokenize_for_match(self, text: str) -> List[str]:
+        normalized = (text or "").lower().strip()
+        if not normalized:
+            return []
+
+        if jieba is not None:
+            raw_tokens = [token.strip().lower() for token in jieba.lcut(normalized) if token.strip()]
+        else:
+            raw_tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", normalized)
+
+        filtered = []
+        for token in raw_tokens:
+            if token in MATCH_STOPWORDS:
+                continue
+            if re.fullmatch(r"[a-z0-9_]+", token) and len(token) <= 1:
+                continue
+            filtered.append(token)
+        return filtered
+
+    def _has_knowledge_hit(self, question: str, contexts: List[SearchResult]) -> bool:
+        """用关键词重叠判断知识库是否真的命中，避免低分误命中。"""
+        if not contexts:
+            return False
+
+        query_tokens = self._tokenize_for_match(question)
+        if not query_tokens:
+            return bool(contexts)
+
+        context_text = "\n".join(f"{ctx.title}\n{ctx.content}" for ctx in contexts).lower()
+        context_tokens = set(self._tokenize_for_match(context_text))
+
+        for token in query_tokens:
+            if token in context_tokens:
+                return True
+            if len(token) > 1 and token in context_text:
+                return True
+
+        return False
+
+    def _merge_completion_text(self, first_part: str, second_part: str) -> str:
+        """拼接两段模型输出，尽量避免生硬断行。"""
+        if not first_part:
+            return second_part or ""
+        if not second_part:
+            return first_part
+
+        if first_part.endswith(("\n", " ", "\t")) or second_part.startswith(("\n", " ", "\t")):
+            return f"{first_part}{second_part}"
+
+        return f"{first_part}\n{second_part}"
+
+    def _create_chat_completion(
+        self,
+        client: OpenAI,
+        model_name: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        log_label: str
+    ) -> str:
+        """执行一次对话补全，并在长度截断时自动续写一次。"""
+        started_at = time.perf_counter()
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=max_tokens
+        )
+        elapsed = time.perf_counter() - started_at
+
+        choice = response.choices[0] if response.choices else None
+        message = getattr(choice, "message", None)
+        content = (getattr(message, "content", None) or "").strip()
+        finish_reason = getattr(choice, "finish_reason", None)
+        logger.info(
+            "LLM %s completion finished in %.2fs (finish_reason=%s)",
+            log_label,
+            elapsed,
+            finish_reason or "unknown",
+        )
+
+        if finish_reason != "length":
+            return content
+
+        logger.warning(
+            "LLM %s completion hit max_tokens=%d and was truncated, requesting one continuation",
+            log_label,
+            max_tokens,
+        )
+
+        continuation_messages = messages + [
+            {"role": "assistant", "content": content},
+            {
+                "role": "user",
+                "content": "请从刚才中断的位置继续回答，不要重复已经输出的内容，直接续写并完整结束。"
+            }
+        ]
+
+        started_at = time.perf_counter()
+        continuation_response = client.chat.completions.create(
+            model=model_name,
+            messages=continuation_messages,
+            temperature=0.2,
+            max_tokens=max_tokens
+        )
+        continuation_elapsed = time.perf_counter() - started_at
+
+        continuation_choice = continuation_response.choices[0] if continuation_response.choices else None
+        continuation_message = getattr(continuation_choice, "message", None)
+        continuation_content = (getattr(continuation_message, "content", None) or "").strip()
+        continuation_finish_reason = getattr(continuation_choice, "finish_reason", None)
+        logger.info(
+            "LLM %s continuation finished in %.2fs (finish_reason=%s)",
+            log_label,
+            continuation_elapsed,
+            continuation_finish_reason or "unknown",
+        )
+
+        merged_content = self._merge_completion_text(content, continuation_content)
+        if continuation_finish_reason == "length":
+            logger.warning(
+                "LLM %s continuation also hit max_tokens=%d; returning truncated content with notice",
+                log_label,
+                max_tokens,
+            )
+            notice = "\n\n[回答达到长度上限，内容可能未完整生成。请缩小问题范围，或在 .env 中提高 LLM_MAX_TOKENS_* 配置。]"
+            return f"{merged_content.rstrip()}{notice}"
+
+        return merged_content
+
+    def _generate_contextual_answer(
+        self,
+        question: str,
+        contexts: List[SearchResult],
+        client: OpenAI,
+        model_name: str
+    ) -> str:
+        """知识库命中时，基于上下文生成回答。"""
+        context_texts = []
+        for i, ctx in enumerate(contexts, 1):
+            context_texts.append(f"【参考资料 {i}】标题: {ctx.title}\n内容: {ctx.content}")
+
+        context_str = "\n\n".join(context_texts)
+        system_prompt = (
+            "你是一个专业、严谨且有用的个人知识库助手。"
+            "请严格基于以下供参考的上下文信息来回答用户的问题。"
+            "如果上下文信息不足以回答问题，请如实说明无法根据现有知识库回答，不要编造信息。"
+            "重要排版与引用规则："
+            "1. 必须使用 Markdown 格式(如加粗、列表、代码块)使回答结构清晰、层次分明、易于阅读。"
+            "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
+        )
+        user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
+        return self._create_chat_completion(
+            client,
+            model_name,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            LLM_MAX_TOKENS_CONTEXT,
+            "contextual",
+        )
+
+    def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> str:
+        """知识库未命中时，使用通用模型回答。"""
+        system_prompt = (
+            "你是一个有用的通用助手。"
+            "当前知识库没有命中相关内容。"
+            "请直接回答用户问题，但必须明确说明这次回答不是来自知识库，而是通用模型回答。"
+            "请使用清晰的 Markdown 格式。"
+        )
+        return self._create_chat_completion(
+            client,
+            model_name,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ],
+            LLM_MAX_TOKENS_FALLBACK,
+            "fallback",
+        )
 
     def _generate_fallback_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """回退方案：如果未配置LLM或调用失败，返回简单的匹配结果"""
@@ -475,11 +663,33 @@ class RAGEngine:
         
         return "".join(answer_parts)
     
-    def ask(self, question: str, context_limit: int = 3) -> Tuple[str, List[SearchResult]]:
+    def ask(
+        self,
+        question: str,
+        context_limit: int = 3,
+        allow_model_fallback: bool = False
+    ) -> Tuple[str, List[SearchResult], bool, bool, bool]:
         """问答功能"""
         contexts = self.vector_store.get_context_for_question(question, limit=context_limit)
-        answer = self.generate_answer(question, contexts)
-        return answer, contexts
+        knowledge_found = self._has_knowledge_hit(question, contexts)
+        has_model = bool((settings_manager.get_settings().get("llm_api_key") or "").strip())
+
+        if knowledge_found:
+            logger.info("Knowledge hit for question=%r with %d source(s)", question, len(contexts))
+            answer = self.generate_answer(question, contexts)
+            return answer, contexts, True, False, False
+
+        if has_model and not allow_model_fallback:
+            logger.info("Knowledge miss for question=%r, requesting user confirmation for model fallback", question)
+            return "知识库并不包含相关资料，是否调用模型继续询问？", [], False, True, False
+
+        if has_model and allow_model_fallback:
+            logger.info("User confirmed model fallback for question=%r", question)
+            answer = self.generate_answer(question, [])
+            return answer, [], False, False, True
+
+        logger.info("Knowledge miss for question=%r and no LLM configured", question)
+        return "知识库不存在该资料。", [], False, False, False
 
 
 # 全局 RAG 引擎实例

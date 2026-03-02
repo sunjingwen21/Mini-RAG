@@ -268,16 +268,25 @@ body {
 /* 智能问答高亮按钮 */
 .qa-special-btn {
     position: relative;
-    background: linear-gradient(135deg, #6366f1, #a855f7) !important;
-    color: white !important;
-    border: none;
+    border: 1px solid rgba(99, 102, 241, 0.12);
     overflow: hidden;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
+    box-shadow: none;
 }
 
 .qa-special-btn:hover {
     transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(99, 102, 241, 0.12);
+}
+
+.qa-special-btn.active {
+    background: linear-gradient(135deg, #6366f1, #a855f7) !important;
+    color: white !important;
+    border-color: transparent;
+    box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
+}
+
+.qa-special-btn.active:hover {
     box-shadow: 0 8px 25px rgba(168, 85, 247, 0.5);
     background: linear-gradient(135deg, #4f46e5, #9333ea) !important;
 }

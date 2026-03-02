@@ -1,33 +1,41 @@
 #!/usr/bin/env python3
 """
-Mini-RAG 停止脚本
-停止运行中的服务器
+Mini-RAG stop helper for Linux environments.
 """
 import subprocess
 import sys
 
-def stop_server():
-    """停止服务器"""
+
+def stop_server() -> None:
     print("=" * 50)
-    print("🛑 停止 Mini-RAG 服务器")
+    print("Stopping Mini-RAG")
     print("=" * 50)
-    
+
     try:
-        # 在 Windows 上终止 Python 进程
         result = subprocess.run(
-            ["taskkill", "/F", "/IM", "python.exe"],
+            ["pkill", "-f", "python.*run.py|uvicorn"],
             capture_output=True,
-            text=True
+            text=True,
         )
-        
-        if result.returncode == 0:
-            print("✅ 服务器已停止")
-        else:
-            print("ℹ️ 没有找到运行中的服务器进程")
-            
-    except Exception as e:
-        print(f"❌ 停止服务器时出错: {e}")
+    except FileNotFoundError:
+        print("pkill is not available on this system.")
         sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to stop server: {exc}")
+        sys.exit(1)
+
+    if result.returncode == 0:
+        print("Mini-RAG stopped.")
+        return
+
+    if result.returncode == 1:
+        print("No running Mini-RAG process was found.")
+        return
+
+    stderr = result.stderr.strip()
+    print(f"Failed to stop server: {stderr or 'unknown error'}")
+    sys.exit(1)
+
 
 if __name__ == "__main__":
     stop_server()

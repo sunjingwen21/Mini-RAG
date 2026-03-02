@@ -2,6 +2,8 @@
 
 一个轻量级的个人知识库系统，基于 RAG（检索增强生成）技术，支持文档管理、语义搜索和智能问答。
 
+当前仓库按 Linux 环境维护，开发和部署入口统一为 `start.sh` / `stop.sh`。
+
 ## 功能特点
 
 - 📄 文档管理：支持上传和管理文本文档
@@ -25,36 +27,75 @@
 pip install -r requirements.txt
 ```
 
+### 安全配置（必需）
+
+项目现在默认要求管理员令牌，未配置时不会启动。
+
+1. 复制环境变量模板
+
+```bash
+cp .env.example .env
+```
+
+2. 生成一个足够长的随机令牌
+
+```bash
+openssl rand -hex 32
+```
+
+3. 把生成的值写入 `.env`
+
+```env
+MINI_RAG_ADMIN_TOKEN=把这里替换成你的随机令牌
+MINI_RAG_DEBUG=false
+MINI_RAG_CORS_ORIGINS=http://localhost:8000
+```
+
+说明:
+- `start.sh` 会自动读取项目根目录的 `.env`
+- `start.sh` 会以后台方式启动服务，并把日志统一写到 `log/`
+- 浏览器第一次打开页面时，会提示输入这个访问令牌
+- 公网部署时，把 `MINI_RAG_CORS_ORIGINS` 改成你的实际域名，例如 `https://rag.example.com`
+- 更完整的配置说明见 `docs/CONFIGURATION.md`
+- 中文配置说明见 `docs/CONFIGURATION.zh-CN.md`
+
 ### 启动服务
 
-**方式一：命令行启动**
+**方式一：前台启动（调试）**
 ```bash
 python run.py
 ```
 
-**方式二：双击启动（Windows）**
+**方式二：后台启动（推荐）**
+```bash
+bash start.sh
 ```
-双击 start.bat 文件
+
+查看日志：
+
+```bash
+tail -f log/app.log
+tail -f log/access.log
+tail -f log/launcher.log
 ```
 
 ### 停止服务
 
 **方式一：快捷键停止**
-- 在运行终端按 `Ctrl + C`
+- 仅在前台运行 `python run.py` 时使用 `Ctrl + C`
 
 **方式二：命令行停止**
 ```bash
-python stop.py
+bash stop.sh
 ```
 
-**方式三：双击停止（Windows）**
-```
-双击 stop.bat 文件
-```
+如果你需要，也可以继续使用 `python stop.py`；它同样基于 `pkill` 停止服务进程。
 
 ### 访问应用
 
 打开浏览器访问 http://localhost:8000
+
+首次访问会要求输入 `.env` 中配置的 `MINI_RAG_ADMIN_TOKEN`。
 
 ## 项目结构
 

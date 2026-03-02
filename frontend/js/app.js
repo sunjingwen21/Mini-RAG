@@ -4,24 +4,110 @@
 
 // API 基础地址
 const API_BASE = '';
+const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 
 // 当前查看的文档 ID
 let currentDocId = null;
 let isDeletingDocument = false;
+let isAskingQuestion = false;
+let authModalResolver = null;
+let confirmModalResolver = null;
 
 // ==================== 初始化 ====================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    const authenticated = await ensureAuthenticated();
+    if (!authenticated) {
+        return;
+    }
+
     loadStats();
     loadTags();
     loadDocuments();
 });
 
+function getAdminToken() {
+    return localStorage.getItem(AUTH_STORAGE_KEY) || '';
+}
+
+function setAdminToken(token) {
+    localStorage.setItem(AUTH_STORAGE_KEY, token);
+}
+
+function clearAdminToken() {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function showAuthModal(force = false) {
+    const modal = document.getElementById('authModal');
+    const message = document.getElementById('authModalMessage');
+    const input = document.getElementById('authTokenInput');
+    const title = document.getElementById('authModalTitle');
+    const currentToken = force ? '' : getAdminToken();
+
+    title.textContent = force ? '访问令牌失效' : '输入访问令牌';
+    message.textContent = force ? '访问令牌无效，请重新输入。' : '请输入访问令牌以继续访问知识库。';
+    input.value = currentToken;
+
+    modal.classList.remove('hidden');
+
+    setTimeout(() => input.focus(), 0);
+
+    return new Promise(resolve => {
+        authModalResolver = resolve;
+    });
+}
+
+async function ensureAuthenticated(force = false) {
+    let token = getAdminToken();
+    if (!token || force) {
+        token = await showAuthModal(force);
+    }
+    return Boolean(token);
+}
+
+function changeAuthToken() {
+    showAuthModal(true).then(token => {
+        if (token) {
+            showToast('访问令牌已更新', 'success');
+        }
+    });
+}
+
+async function apiFetch(path, options = {}, retry = true) {
+    let token = getAdminToken();
+    if (!token) {
+        const authenticated = await ensureAuthenticated();
+        if (!authenticated) {
+            throw new Error('未提供访问令牌');
+        }
+        token = getAdminToken();
+    }
+
+    const headers = new Headers(options.headers || {});
+    headers.set('X-Admin-Token', token);
+
+    const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers
+    });
+
+    if (response.status === 401 && retry) {
+        clearAdminToken();
+        const authenticated = await ensureAuthenticated(true);
+        if (authenticated) {
+            return apiFetch(path, options, false);
+        }
+    }
+
+    return response;
+}
+
 // ==================== 统计信息 ====================
 
 async function loadStats() {
     try {
-        const response = await fetch(`${API_BASE}/api/stats`);
+        const response = await apiFetch('/api/stats');
         const data = await response.json();
 
         document.getElementById('totalDocs').textContent = data.total_documents;
@@ -35,7 +121,7 @@ async function loadStats() {
 
 async function loadTags() {
     try {
-        const response = await fetch(`${API_BASE}/api/tags`);
+        const response = await apiFetch('/api/tags');
         const tags = await response.json();
 
         const tagsList = document.getElementById('tagsList');
@@ -66,7 +152,7 @@ function filterByTag(tag) {
 
 async function loadDocuments() {
     try {
-        const response = await fetch(`${API_BASE}/api/documents?limit=50`);
+        const response = await apiFetch('/api/documents?limit=50');
         const data = await response.json();
 
         const documentsList = document.getElementById('documentsList');
@@ -102,7 +188,7 @@ async function loadDocuments() {
 
 async function viewDocument(docId) {
     try {
-        const response = await fetch(`${API_BASE}/api/documents/${docId}`);
+        const response = await apiFetch(`/api/documents/${docId}`);
         if (!response.ok) {
             throw new Error('加载失败');
         }
@@ -171,13 +257,13 @@ async function saveDocument() {
     try {
         let response;
         if (docId) {
-            response = await fetch(`${API_BASE}/api/documents/${docId}`, {
+            response = await apiFetch(`/api/documents/${docId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
         } else {
-            response = await fetch(`${API_BASE}/api/documents`, {
+            response = await apiFetch('/api/documents', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -212,7 +298,7 @@ async function deleteCurrentDoc() {
     removeDocumentFromUI(docIdToDelete);
 
     try {
-        const response = await fetch(`${API_BASE}/api/documents/${docIdToDelete}`, {
+        const response = await apiFetch(`/api/documents/${docIdToDelete}`, {
             method: 'DELETE'
         });
 
@@ -295,7 +381,7 @@ async function performSearch() {
     `;
 
     try {
-        const response = await fetch(`${API_BASE}/api/search`, {
+        const response = await apiFetch('/api/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, limit: 10 })
@@ -342,28 +428,50 @@ async function performSearch() {
 
 async function askQuestion() {
     const question = document.getElementById('questionInput').value.trim();
+    const askButton = document.getElementById('askQuestionBtn');
 
     if (!question) {
         showToast('请输入问题', 'error');
         return;
     }
 
+    if (isAskingQuestion) {
+        return;
+    }
+
     const qaAnswer = document.getElementById('qaAnswer');
     const answerContent = document.getElementById('answerContent');
     const sourcesList = document.getElementById('sourcesList');
+    const originalButtonHtml = askButton ? askButton.innerHTML : '';
+
+    isAskingQuestion = true;
+    if (askButton) {
+        askButton.disabled = true;
+        askButton.innerHTML = '<i class="fas fa-spinner"></i> 处理中...';
+    }
 
     qaAnswer.classList.remove('hidden');
     answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在思考...</div>';
     sourcesList.innerHTML = '';
 
     try {
-        const response = await fetch(`${API_BASE}/api/ask`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, context_limit: 3 })
-        });
+        let data = await requestAnswer(question, false);
 
-        const data = await response.json();
+        if (data.needs_model_confirmation) {
+            const shouldContinue = await showConfirmModal(
+                '知识库并不包含相关资料，是否调用模型继续询问？',
+                '继续提问'
+            );
+
+            if (shouldContinue) {
+                answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在调用模型...</div>';
+                data = await requestAnswer(question, true);
+            } else {
+                answerContent.innerHTML = '<p style="color: var(--text-secondary);">知识库不存在该资料。</p>';
+                sourcesList.innerHTML = '<p style="color: var(--text-secondary);">暂无参考来源</p>';
+                return;
+            }
+        }
 
         // 显示回答
         answerContent.innerHTML = formatAnswer(data.answer);
@@ -382,7 +490,31 @@ async function askQuestion() {
     } catch (error) {
         console.error('问答失败:', error);
         answerContent.innerHTML = '<p style="color: var(--danger-color);">问答失败，请稍后重试</p>';
+    } finally {
+        isAskingQuestion = false;
+        if (askButton) {
+            askButton.disabled = false;
+            askButton.innerHTML = originalButtonHtml;
+        }
     }
+}
+
+async function requestAnswer(question, allowModelFallback = false) {
+    const response = await apiFetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            question,
+            context_limit: 3,
+            allow_model_fallback: allowModelFallback
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('问答请求失败');
+    }
+
+    return response.json();
 }
 
 function formatAnswer(answer) {
@@ -432,9 +564,9 @@ function escapeHtml(text) {
 }
 
 function formatDate(dateString) {
-    const date = new Date(dateString);
+    const date = parseServerDate(dateString);
     const now = new Date();
-    const diff = now - date;
+    const diff = Math.max(0, now - date);
 
     // 一小时内
     if (diff < 3600000) {
@@ -460,6 +592,22 @@ function formatDate(dateString) {
         month: '2-digit',
         day: '2-digit'
     });
+}
+
+function parseServerDate(dateString) {
+    if (!dateString) {
+        return new Date();
+    }
+
+    const hasExplicitTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(dateString);
+    const normalized = hasExplicitTimezone ? dateString : `${dateString}Z`;
+    const parsed = new Date(normalized);
+
+    if (Number.isNaN(parsed.getTime())) {
+        return new Date(dateString);
+    }
+
+    return parsed;
 }
 
 function showToast(message, type = '') {
@@ -502,7 +650,7 @@ async function showSettingsModal() {
     document.getElementById('settingsModal').classList.remove('hidden');
     // 获取当前配置
     try {
-        const response = await fetch(`${API_BASE}/api/settings`);
+        const response = await apiFetch('/api/settings');
         const settings = await response.json();
 
         document.getElementById('settingBaseUrl').value = settings.llm_base_url || '';
@@ -539,11 +687,6 @@ async function saveSettings() {
     const apiKey = document.getElementById('settingApiKey').value.trim();
     const modelName = document.getElementById('settingModelName').value.trim();
 
-    if (!apiKey) {
-        showToast('API Key 不能为空', 'error');
-        return;
-    }
-
     // 显示保存中...
     const saveBtn = document.querySelector('#settingsModal .btn-primary');
     const originalText = saveBtn.textContent;
@@ -551,7 +694,7 @@ async function saveSettings() {
     saveBtn.disabled = true;
 
     try {
-        const response = await fetch(`${API_BASE}/api/settings`, {
+        const response = await apiFetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -571,5 +714,67 @@ async function saveSettings() {
     } finally {
         saveBtn.textContent = originalText;
         saveBtn.disabled = false;
+    }
+}
+
+function submitAuthModal() {
+    const input = document.getElementById('authTokenInput');
+    const token = input.value.trim();
+
+    if (!token) {
+        clearAdminToken();
+        if (authModalResolver) {
+            const resolve = authModalResolver;
+            authModalResolver = null;
+            hideAuthModal();
+            resolve('');
+        }
+        return;
+    }
+
+    setAdminToken(token);
+    if (authModalResolver) {
+        const resolve = authModalResolver;
+        authModalResolver = null;
+        hideAuthModal();
+        resolve(token);
+    }
+}
+
+function cancelAuthModal() {
+    if (authModalResolver) {
+        const resolve = authModalResolver;
+        authModalResolver = null;
+        hideAuthModal();
+        resolve('');
+    }
+}
+
+function hideAuthModal() {
+    document.getElementById('authModal').classList.add('hidden');
+}
+
+function handleAuthTokenKey(event) {
+    if (event.key === 'Enter') {
+        submitAuthModal();
+    }
+}
+
+function showConfirmModal(message, title = '确认操作') {
+    document.getElementById('confirmModalTitle').textContent = title;
+    document.getElementById('confirmModalMessage').textContent = message;
+    document.getElementById('confirmModal').classList.remove('hidden');
+
+    return new Promise(resolve => {
+        confirmModalResolver = resolve;
+    });
+}
+
+function resolveConfirmModal(result) {
+    if (confirmModalResolver) {
+        const resolve = confirmModalResolver;
+        confirmModalResolver = null;
+        document.getElementById('confirmModal').classList.add('hidden');
+        resolve(result);
     }
 }

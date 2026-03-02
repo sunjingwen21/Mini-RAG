@@ -45,8 +45,12 @@ temp/
 *.temp
 
 # Logs
+log/
 *.log
 
 # OS
 .DS_Store
 Thumbs.db
+
+# env
+.env
