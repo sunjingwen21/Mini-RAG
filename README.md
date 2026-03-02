@@ -14,7 +14,7 @@
 
 - **后端**: Python + FastAPI
 - **向量数据库**: ChromaDB
-- **嵌入模型**: Sentence Transformers
+- **嵌入模型**: ONNX MiniLM-L6-V2 (无需 PyTorch)
 - **前端**: HTML/CSS/JavaScript (现代响应式设计)
 
 ## 快速开始
@@ -27,8 +27,29 @@ pip install -r requirements.txt
 
 ### 启动服务
 
+**方式一：命令行启动**
 ```bash
 python run.py
+```
+
+**方式二：双击启动（Windows）**
+```
+双击 start.bat 文件
+```
+
+### 停止服务
+
+**方式一：快捷键停止**
+- 在运行终端按 `Ctrl + C`
+
+**方式二：命令行停止**
+```bash
+python stop.py
+```
+
+**方式三：双击停止（Windows）**
+```
+双击 stop.bat 文件
 ```
 
 ### 访问应用

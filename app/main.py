@@ -11,7 +11,9 @@ from app.models import (
     SearchRequest, SearchResult, QuestionRequest, AnswerResponse,
     TagResponse, MessageResponse
 )
+from pydantic import BaseModel
 from app.database import document_store
+from app.settings import settings_manager
 from app.rag import rag_engine
 from app.config import DEBUG
 
@@ -34,6 +36,13 @@ app.add_middleware(
 
 # 静态文件目录
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+
+@app.on_event("startup")
+async def sync_vector_index():
+    """启动时根据主文档存储重建向量索引，避免 JSON 与 Chroma 脱节。"""
+    indexed_chunks = rag_engine.rebuild_index(document_store.get_all())
+    print(f"向量索引已同步，共 {indexed_chunks} 个分块")
 
 
 # ==================== 页面路由 ====================
@@ -131,7 +140,7 @@ async def update_document(doc_id: str, doc_create: DocumentCreate):
         raise HTTPException(status_code=404, detail="文档不存在")
     
     # 更新向量索引
-    rag_engine.index_document(document)
+    rag_engine.update_document(document)
     
     return DocumentResponse(
         id=document.id,
@@ -146,13 +155,24 @@ async def update_document(doc_id: str, doc_create: DocumentCreate):
 @app.delete("/api/documents/{doc_id}", response_model=MessageResponse, summary="删除文档")
 async def delete_document(doc_id: str):
     """删除文档及其索引"""
+    document = document_store.get(doc_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
     success = document_store.delete(doc_id)
     
     if not success:
         raise HTTPException(status_code=404, detail="文档不存在")
     
     # 删除向量索引
-    rag_engine.remove_document(doc_id)
+    try:
+        rag_engine.remove_document(doc_id)
+    except Exception as e:
+        print(f"删除向量索引失败，尝试重建索引: {e}")
+        try:
+            rag_engine.rebuild_index(document_store.get_all())
+        except Exception as rebuild_error:
+            print(f"重建向量索引失败: {rebuild_error}")
     
     return MessageResponse(message="文档删除成功", success=True)
 
@@ -209,6 +229,36 @@ async def get_stats():
         "recent_documents": len([d for d in docs if d.updated_at.date().isoformat() == 
                                  docs[0].updated_at.date().isoformat()]) if docs else 0
     }
+
+# ==================== 设置 API ====================
+
+class SettingsRequest(BaseModel):
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+
+@app.get("/api/settings", summary="获取当前大模型设置")
+async def get_settings():
+    return settings_manager.get_settings()
+
+@app.post("/api/settings", response_model=MessageResponse, summary="更新大模型设置")
+async def update_settings(settings: SettingsRequest):
+    success = settings_manager.save_settings({
+        "llm_base_url": settings.llm_base_url,
+        "llm_api_key": settings.llm_api_key,
+        "llm_model": settings.llm_model,
+        "embedding_base_url": settings.embedding_base_url,
+        "embedding_api_key": settings.embedding_api_key,
+        "embedding_model": settings.embedding_model
+    })
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="保存设置失败")
+        
+    return MessageResponse(message="设置已保存", success=True)
 
 
 # 挂载静态文件

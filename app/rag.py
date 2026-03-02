@@ -1,12 +1,20 @@
 """RAG 核心逻辑"""
+import hashlib
+import math
 import re
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-from app.config import CHROMA_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP
+from app.config import CHROMA_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP, LLM_EMBEDDING_MODEL
 from app.models import Document, SearchResult
+from app.settings import settings_manager
+from openai import OpenAI
+
+try:
+    import jieba
+except Exception:
+    jieba = None
 
 
 class TextSplitter:
@@ -74,33 +82,165 @@ class TextSplitter:
         
         return chunks
 
+class CustomOpenAIEmbeddingFunction(EmbeddingFunction):
+    """自定义的新版 OpenAI 嵌入函数（适配 openai >= 1.0.0）"""
+    def __init__(self, api_key: str, api_base: Optional[str] = None, model_name: str = "text-embedding-3-small"):
+        self.api_key = api_key
+        self.api_base = api_base
+        self.model_name = model_name
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base if self.api_base else None
+        )
+
+    def __call__(self, input: Documents) -> Embeddings:
+        # 支持批量获取 embedding
+        response = self.client.embeddings.create(
+            input=input,
+            model=self.model_name
+        )
+        return [data.embedding for data in response.data]
+
+
+class LocalHashEmbeddingFunction(EmbeddingFunction):
+    """本地分词哈希向量，避免远端 Embedding 不可用时整库退化为同一向量。"""
+
+    def __init__(self, dim: int = 384):
+        self.dim = dim
+
+    def _tokenize(self, text: str) -> List[str]:
+        normalized = (text or "").lower().strip()
+        if not normalized:
+            return ["__empty__"]
+
+        if jieba is not None:
+            tokens = [token.strip() for token in jieba.lcut(normalized) if token.strip()]
+            if tokens:
+                return tokens
+
+        return re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", normalized) or [normalized]
+
+    def _stable_bucket(self, token: str) -> Tuple[int, float]:
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % self.dim
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        return index, sign
+
+    def __call__(self, input: Documents) -> Embeddings:
+        vectors: Embeddings = []
+
+        for text in input:
+            vec = [0.0] * self.dim
+
+            for token in self._tokenize(text):
+                index, sign = self._stable_bucket(token)
+                vec[index] += sign
+
+            norm = math.sqrt(sum(value * value for value in vec))
+            if norm == 0:
+                vec[0] = 1.0
+                norm = 1.0
+
+            vectors.append([value / norm for value in vec])
+
+        return vectors
+
 
 class VectorStore:
     """向量存储管理"""
     
     def __init__(self):
         self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        # 使用默认的嵌入函数（不需要 PyTorch）
-        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
-        self.collection = self.client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"}
-        )
+        self.embedding_function = self._build_embedding_function()
+        self.collection = self._create_collection()
         self.splitter = TextSplitter()
+        # 内存缓存，避免 chromadb==0.4.15 查询缺陷直接影响问答结果
+        self._cache: Dict[str, Dict[str, Any]] = {}
+
+    def _build_embedding_function(self) -> EmbeddingFunction:
+        """优先使用独立配置的 Embedding 服务；未配置时使用本地向量。"""
+        settings = settings_manager.get_settings()
+        embed_api_key = (settings.get("embedding_api_key") or "").strip()
+        embed_base_url = (settings.get("embedding_base_url") or "").strip()
+        embed_model = (settings.get("embedding_model") or "").strip()
+
+        if not any([embed_api_key, embed_base_url, embed_model]):
+            print("未配置独立 Embedding 服务，使用本地分词哈希向量")
+            return LocalHashEmbeddingFunction()
+
+        if not embed_api_key:
+            print("Embedding API Key 未配置，使用本地分词哈希向量")
+            return LocalHashEmbeddingFunction()
+
+        try:
+            candidate = CustomOpenAIEmbeddingFunction(
+                api_key=embed_api_key,
+                api_base=embed_base_url or None,
+                model_name=embed_model or LLM_EMBEDDING_MODEL
+            )
+            candidate(["test"])
+            print("已启用远端 Embedding 服务")
+            return candidate
+        except Exception as e:
+            print(f"Embedding 服务不可用，转为本地分词哈希向量: {e}")
+            return LocalHashEmbeddingFunction()
+
+    def _create_collection(self):
+        return self.client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=self.embedding_function
+        )
     
     def _get_embedding(self, text: str) -> List[float]:
         """获取文本嵌入向量"""
         embedding = self.embedding_function([text])
         if embedding is not None and len(embedding) > 0:
-            return embedding[0].tolist()
+            # 处理不同的返回格式
+            if hasattr(embedding[0], 'tolist'):
+                return embedding[0].tolist()
+            elif isinstance(embedding[0], list):
+                return embedding[0]
+            else:
+                return list(embedding[0])
         return []
     
     def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """批量获取嵌入向量"""
         embeddings = self.embedding_function(texts)
         if embeddings is not None:
-            return [e.tolist() for e in embeddings]
+            result = []
+            for e in embeddings:
+                if hasattr(e, 'tolist'):
+                    result.append(e.tolist())
+                elif isinstance(e, list):
+                    result.append(e)
+                else:
+                    result.append(list(e))
+            return result
         return []
+
+    def _cache_chunks(
+        self,
+        ids: List[str],
+        chunks: List[str],
+        metadatas: List[Dict[str, Any]],
+        embeddings: List[List[float]]
+    ):
+        for chunk_id, chunk, metadata, embedding in zip(ids, chunks, metadatas, embeddings):
+            self._cache[chunk_id] = {
+                "embedding": embedding,
+                "document": chunk,
+                "metadata": metadata
+            }
+
+    def _score_similarity(self, left: List[float], right: List[float]) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+
+        cosine = sum(a * b for a, b in zip(left, right))
+        # 归一化到 0~1，兼容前端显示和 Pydantic 校验。
+        return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
     
     def add_document(self, document: Document) -> int:
         """添加文档到向量存储"""
@@ -123,21 +263,13 @@ class VectorStore:
             })
         
         embeddings = self._get_embeddings(chunks)
-        
-        if embeddings:
-            self.collection.add(
-                ids=ids,
-                documents=chunks,
-                embeddings=embeddings,
-                metadatas=metadatas
-            )
-        else:
-            # 如果无法获取嵌入向量，让 ChromaDB 自动处理
-            self.collection.add(
-                ids=ids,
-                documents=chunks,
-                metadatas=metadatas
-            )
+        self.collection.add(
+            ids=ids,
+            documents=chunks,
+            metadatas=metadatas,
+            embeddings=embeddings
+        )
+        self._cache_chunks(ids, chunks, metadatas, embeddings)
         
         return len(chunks)
     
@@ -148,50 +280,60 @@ class VectorStore:
     
     def delete_document(self, doc_id: str):
         """删除文档的所有块"""
-        # 获取所有该文档的块ID
-        results = self.collection.get(
-            where={"doc_id": doc_id}
-        )
-        
-        if results['ids']:
-            self.collection.delete(ids=results['ids'])
+        prefix = f"{doc_id}_chunk_"
+        stale_ids = [chunk_id for chunk_id in list(self._cache) if chunk_id.startswith(prefix)]
+
+        if stale_ids:
+            self.collection.delete(ids=stale_ids)
+
+        for chunk_id in stale_ids:
+            self._cache.pop(chunk_id, None)
+
+    def rebuild(self, documents: List[Document]) -> int:
+        """根据主文档存储全量重建索引。"""
+        try:
+            self.client.delete_collection(COLLECTION_NAME)
+        except Exception:
+            pass
+
+        self.collection = self._create_collection()
+        self._cache.clear()
+
+        indexed_chunks = 0
+        for document in documents:
+            indexed_chunks += self.add_document(document)
+
+        return indexed_chunks
     
     def search(self, query: str, limit: int = 5) -> List[Tuple[str, str, float, str, str, List[str]]]:
         """
         搜索相似内容
         返回: [(chunk_id, content, score, doc_id, title, tags), ...]
         """
+        if not self._cache:
+            return []
+
         query_embedding = self._get_embedding(query)
-        
-        if query_embedding:
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=limit
-            )
-        else:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=limit
-            )
-        
+        if not query_embedding:
+            return []
+
         search_results = []
-        
-        if results['ids'] and results['ids'][0]:
-            for i, chunk_id in enumerate(results['ids'][0]):
-                content = results['documents'][0][i] if results['documents'] else ""
-                metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                distance = results['distances'][0][i] if results['distances'] else 0
-                
-                # 将距离转换为相似度分数 (1 - distance for cosine)
-                score = 1 - distance
-                
-                doc_id = metadata.get('doc_id', '')
-                title = metadata.get('title', '')
-                tags = metadata.get('tags', '').split(',') if metadata.get('tags') else []
-                
-                search_results.append((chunk_id, content, score, doc_id, title, tags))
-        
-        return search_results
+        for chunk_id, entry in self._cache.items():
+            metadata = entry["metadata"]
+            score = self._score_similarity(query_embedding, entry["embedding"])
+
+            search_results.append((
+                chunk_id,
+                entry["document"],
+                score,
+                metadata.get("doc_id", ""),
+                metadata.get("title", ""),
+                metadata.get("tags", "").split(",") if metadata.get("tags") else []
+            ))
+
+        search_results.sort(key=lambda item: item[2], reverse=True)
+        return search_results[:limit]
+
     
     def get_context_for_question(self, question: str, limit: int = 3) -> List[SearchResult]:
         """获取问题的相关上下文"""
@@ -220,10 +362,19 @@ class RAGEngine:
     
     def __init__(self):
         self.vector_store = VectorStore()
+        # 将在此处移除固定客户端，改为在问答时动态初始化
     
     def index_document(self, document: Document) -> int:
         """索引文档"""
         return self.vector_store.add_document(document)
+
+    def update_document(self, document: Document) -> int:
+        """更新已存在文档的索引。"""
+        return self.vector_store.update_document(document)
+
+    def rebuild_index(self, documents: List[Document]) -> int:
+        """根据主存储全量重建索引。"""
+        return self.vector_store.rebuild(documents)
     
     def remove_document(self, doc_id: str):
         """从索引中移除文档"""
@@ -250,18 +401,70 @@ class RAGEngine:
         return search_results
     
     def generate_answer(self, question: str, contexts: List[SearchResult]) -> str:
-        """基于上下文生成答案（简化版，不使用外部LLM）"""
+        """基于上下文生成答案"""
         if not contexts:
             return "抱歉，我在知识库中没有找到相关的信息来回答您的问题。"
         
-        # 构建简单的回答
-        answer_parts = [f"根据知识库中的信息，以下是与您问题相关的内容：\n"]
+        # 构建参考内容文本
+        context_texts = []
+        for i, ctx in enumerate(contexts, 1):
+            context_texts.append(f"【参考资料 {i}】标题: {ctx.title}\n内容: {ctx.content}")
+        
+        context_str = "\n\n".join(context_texts)
+        
+        # 动态读取当前配置
+        settings = settings_manager.get_settings()
+        api_key = settings.get("llm_api_key", "")
+        base_url = settings.get("llm_base_url", "")
+        model_name = settings.get("llm_model", "gpt-3.5-turbo")
+        
+        if api_key:
+            try:
+                # 每次生成答案时动态初始化，以适应动态密钥切换
+                client = OpenAI(
+                    api_key=api_key,
+                    base_url=base_url if base_url else None
+                )
+                
+                # 使用 LLM 生成答案
+                system_prompt = (
+                    "你是一个专业、严谨且有用的个人知识库助手。"
+                    "请严格基于以下供参考的上下文信息来回答用户的问题。"
+                    "如果上下文信息不足以回答问题，请如实说明无法根据现有知识库回答，不要编造信息。"
+                    "重要排版与引用规则："
+                    "1. 必须使用 Markdown 格式(如加粗、列表、代码块)使回答结构清晰、层次分明、易于阅读。"
+                    "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
+                )
+                
+                user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
+                
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                print(f"LLM 生成失败: {e}")
+                import traceback
+                traceback.print_exc()
+                return self._generate_fallback_answer(question, contexts)
+        else:
+            return self._generate_fallback_answer(question, contexts)
+
+    def _generate_fallback_answer(self, question: str, contexts: List[SearchResult]) -> str:
+        """回退方案：如果未配置LLM或调用失败，返回简单的匹配结果"""
+        answer_parts = [f"【此回答未接入大模型，为系统根据相似度自动提取的基础内容】\n根据知识库中的信息，查找到以下相关内容：\n"]
         
         for i, ctx in enumerate(contexts, 1):
             answer_parts.append(f"\n**参考 {i}** (来自《{ctx.title}》，相关度: {ctx.score:.2%})")
             answer_parts.append(f"\n{ctx.content}\n")
         
-        answer_parts.append("\n💡 提示：您可以查看上述参考资料获取更详细的信息。")
+        answer_parts.append("\n💡 提示：您可以配置大模型(LLM_API_KEY等)以获得智能总结。")
         
         return "".join(answer_parts)
     

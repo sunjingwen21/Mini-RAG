@@ -7,6 +7,7 @@ const API_BASE = '';
 
 // 当前查看的文档 ID
 let currentDocId = null;
+let isDeletingDocument = false;
 
 // ==================== 初始化 ====================
 
@@ -22,7 +23,7 @@ async function loadStats() {
     try {
         const response = await fetch(`${API_BASE}/api/stats`);
         const data = await response.json();
-        
+
         document.getElementById('totalDocs').textContent = data.total_documents;
         document.getElementById('totalTags').textContent = data.total_tags;
     } catch (error) {
@@ -36,14 +37,14 @@ async function loadTags() {
     try {
         const response = await fetch(`${API_BASE}/api/tags`);
         const tags = await response.json();
-        
+
         const tagsList = document.getElementById('tagsList');
-        
+
         if (tags.length === 0) {
             tagsList.innerHTML = '<span class="no-tags" style="color: #94a3b8; font-size: 13px;">暂无标签</span>';
             return;
         }
-        
+
         tagsList.innerHTML = tags.map(tag => `
             <span class="tag-item" onclick="filterByTag('${tag.name}')">
                 ${escapeHtml(tag.name)}
@@ -67,10 +68,10 @@ async function loadDocuments() {
     try {
         const response = await fetch(`${API_BASE}/api/documents?limit=50`);
         const data = await response.json();
-        
+
         const documentsList = document.getElementById('documentsList');
         document.getElementById('docCount').textContent = `共 ${data.total} 篇文档`;
-        
+
         if (data.documents.length === 0) {
             documentsList.innerHTML = `
                 <div class="empty-state">
@@ -80,9 +81,9 @@ async function loadDocuments() {
             `;
             return;
         }
-        
+
         documentsList.innerHTML = data.documents.map(doc => `
-            <div class="doc-card" onclick="viewDocument('${doc.id}')">
+            <div class="doc-card" data-doc-id="${doc.id}" onclick="viewDocument('${doc.id}')">
                 <div class="doc-card-title">${escapeHtml(doc.title)}</div>
                 <div class="doc-card-preview">${escapeHtml(doc.content.substring(0, 150))}...</div>
                 <div class="doc-card-meta">
@@ -102,15 +103,18 @@ async function loadDocuments() {
 async function viewDocument(docId) {
     try {
         const response = await fetch(`${API_BASE}/api/documents/${docId}`);
+        if (!response.ok) {
+            throw new Error('加载失败');
+        }
         const doc = await response.json();
-        
+
         currentDocId = docId;
-        
+
         document.getElementById('viewTitle').textContent = doc.title;
         document.getElementById('viewTime').textContent = formatDate(doc.updated_at);
         document.getElementById('viewTags').textContent = doc.tags.join(', ') || '无标签';
         document.getElementById('viewContent').textContent = doc.content;
-        
+
         document.getElementById('viewModal').classList.remove('hidden');
     } catch (error) {
         console.error('加载文档详情失败:', error);
@@ -134,13 +138,14 @@ function hideDocModal() {
 }
 
 function editCurrentDoc() {
+    const docId = currentDocId;
     const title = document.getElementById('viewTitle').textContent;
     const content = document.getElementById('viewContent').textContent;
     const tags = document.getElementById('viewTags').textContent;
-    
+
     hideViewModal();
-    
-    document.getElementById('docId').value = currentDocId;
+
+    document.getElementById('docId').value = docId;
     document.getElementById('docTitle').value = title;
     document.getElementById('docContent').value = content;
     document.getElementById('docTags').value = tags === '无标签' ? '' : tags;
@@ -153,16 +158,16 @@ async function saveDocument() {
     const title = document.getElementById('docTitle').value.trim();
     const content = document.getElementById('docContent').value.trim();
     const tagsInput = document.getElementById('docTags').value.trim();
-    
+
     if (!title || !content) {
         showToast('请填写标题和内容', 'error');
         return;
     }
-    
+
     const tags = tagsInput ? tagsInput.split(',').map(t => t.trim()).filter(t => t) : [];
-    
+
     const payload = { title, content, tags };
-    
+
     try {
         let response;
         if (docId) {
@@ -178,11 +183,11 @@ async function saveDocument() {
                 body: JSON.stringify(payload)
             });
         }
-        
+
         if (!response.ok) {
             throw new Error('保存失败');
         }
-        
+
         hideDocModal();
         loadDocuments();
         loadTags();
@@ -195,34 +200,72 @@ async function saveDocument() {
 }
 
 async function deleteCurrentDoc() {
-    if (!currentDocId) return;
-    
+    if (!currentDocId || isDeletingDocument) return;
+
     if (!confirm('确定要删除这篇文档吗？此操作不可恢复。')) {
         return;
     }
-    
+
+    const docIdToDelete = currentDocId;
+    isDeletingDocument = true;
+    hideViewModal();
+    removeDocumentFromUI(docIdToDelete);
+
     try {
-        const response = await fetch(`${API_BASE}/api/documents/${currentDocId}`, {
+        const response = await fetch(`${API_BASE}/api/documents/${docIdToDelete}`, {
             method: 'DELETE'
         });
-        
+
         if (!response.ok) {
             throw new Error('删除失败');
         }
-        
-        hideViewModal();
+
         loadDocuments();
         loadTags();
         loadStats();
         showToast('文档删除成功', 'success');
     } catch (error) {
         console.error('删除文档失败:', error);
+        loadDocuments();
+        loadTags();
+        loadStats();
         showToast('删除文档失败', 'error');
+    } finally {
+        isDeletingDocument = false;
     }
 }
 
 function hideViewModal() {
     document.getElementById('viewModal').classList.add('hidden');
+    currentDocId = null;
+    document.getElementById('viewTitle').textContent = '文档详情';
+    document.getElementById('viewTime').textContent = '';
+    document.getElementById('viewTags').textContent = '';
+    document.getElementById('viewContent').textContent = '';
+}
+
+function removeDocumentFromUI(docId) {
+    document.querySelectorAll(`[data-doc-id="${docId}"]`).forEach(node => node.remove());
+
+    const remainingCards = document.querySelectorAll('.doc-card').length;
+    const docCount = document.getElementById('docCount');
+    docCount.textContent = `共 ${remainingCards} 篇文档`;
+
+    const totalDocs = document.getElementById('totalDocs');
+    const currentTotal = parseInt(totalDocs.textContent, 10);
+    if (!Number.isNaN(currentTotal) && currentTotal > 0) {
+        totalDocs.textContent = String(currentTotal - 1);
+    }
+
+    const documentsList = document.getElementById('documentsList');
+    if (remainingCards === 0) {
+        documentsList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-file-alt"></i>
+                <p>还没有文档，点击"新建文档"开始吧！</p>
+            </div>
+        `;
+    }
 }
 
 // ==================== 搜索功能 ====================
@@ -235,14 +278,14 @@ function handleSearchKey(event) {
 
 async function performSearch() {
     const query = document.getElementById('searchInput').value.trim();
-    
+
     if (!query) {
         showToast('请输入搜索内容', 'error');
         return;
     }
-    
+
     switchTab('search');
-    
+
     const searchResults = document.getElementById('searchResults');
     searchResults.innerHTML = `
         <div class="loading">
@@ -250,18 +293,18 @@ async function performSearch() {
             <p>正在搜索...</p>
         </div>
     `;
-    
+
     try {
         const response = await fetch(`${API_BASE}/api/search`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, limit: 10 })
         });
-        
+
         const results = await response.json();
-        
+
         document.getElementById('searchInfo').textContent = `找到 ${results.length} 个相关结果`;
-        
+
         if (results.length === 0) {
             searchResults.innerHTML = `
                 <div class="empty-state">
@@ -271,9 +314,9 @@ async function performSearch() {
             `;
             return;
         }
-        
+
         searchResults.innerHTML = results.map(result => `
-            <div class="search-result-item" onclick="viewDocument('${result.id}')">
+            <div class="search-result-item" data-doc-id="${result.id}" onclick="viewDocument('${result.id}')">
                 <div class="search-result-header">
                     <div class="search-result-title">${escapeHtml(result.title)}</div>
                     <span class="search-result-score">${(result.score * 100).toFixed(1)}%</span>
@@ -299,36 +342,36 @@ async function performSearch() {
 
 async function askQuestion() {
     const question = document.getElementById('questionInput').value.trim();
-    
+
     if (!question) {
         showToast('请输入问题', 'error');
         return;
     }
-    
+
     const qaAnswer = document.getElementById('qaAnswer');
     const answerContent = document.getElementById('answerContent');
     const sourcesList = document.getElementById('sourcesList');
-    
+
     qaAnswer.classList.remove('hidden');
     answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在思考...</div>';
     sourcesList.innerHTML = '';
-    
+
     try {
         const response = await fetch(`${API_BASE}/api/ask`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question, context_limit: 3 })
         });
-        
+
         const data = await response.json();
-        
+
         // 显示回答
         answerContent.innerHTML = formatAnswer(data.answer);
-        
+
         // 显示来源
         if (data.sources && data.sources.length > 0) {
             sourcesList.innerHTML = data.sources.map(source => `
-                <div class="source-item" onclick="viewDocument('${source.id}')" style="cursor: pointer;">
+                <div class="source-item" data-doc-id="${source.id}" onclick="viewDocument('${source.id}')" style="cursor: pointer;">
                     <span class="source-title">${escapeHtml(source.title)}</span>
                     <span class="source-score">相关度: ${(source.score * 100).toFixed(1)}%</span>
                 </div>
@@ -343,7 +386,10 @@ async function askQuestion() {
 }
 
 function formatAnswer(answer) {
-    // 简单的 Markdown 格式化
+    if (typeof marked !== 'undefined') {
+        return marked.parse(answer);
+    }
+    // 回退方案
     return answer
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/\n/g, '<br>');
@@ -356,10 +402,10 @@ function switchTab(tab) {
     document.getElementById('documentsSection').classList.add('hidden');
     document.getElementById('searchSection').classList.add('hidden');
     document.getElementById('qaSection').classList.add('hidden');
-    
+
     // 移除所有标签页激活状态
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    
+
     // 显示选中的内容区域
     switch (tab) {
         case 'documents':
@@ -389,25 +435,25 @@ function formatDate(dateString) {
     const date = new Date(dateString);
     const now = new Date();
     const diff = now - date;
-    
+
     // 一小时内
     if (diff < 3600000) {
         const minutes = Math.floor(diff / 60000);
         return minutes <= 1 ? '刚刚' : `${minutes} 分钟前`;
     }
-    
+
     // 一天内
     if (diff < 86400000) {
         const hours = Math.floor(diff / 3600000);
         return `${hours} 小时前`;
     }
-    
+
     // 一周内
     if (diff < 604800000) {
         const days = Math.floor(diff / 86400000);
         return `${days} 天前`;
     }
-    
+
     // 其他
     return date.toLocaleDateString('zh-CN', {
         year: 'numeric',
@@ -421,8 +467,109 @@ function showToast(message, type = '') {
     toast.textContent = message;
     toast.className = `toast ${type}`;
     toast.classList.remove('hidden');
-    
+
     setTimeout(() => {
         toast.classList.add('hidden');
     }, 3000);
+}
+
+// ==================== 模型设置 ====================
+
+const MODEL_PRESETS = {
+    'deepseek': {
+        url: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat'
+    },
+    'glm': {
+        url: 'https://open.bigmodel.cn/api/paas/v4',
+        model: 'glm-4'
+    },
+    'qwen': {
+        url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen-turbo'
+    },
+    'minimax': {
+        url: 'https://api.minimax.chat/v1',
+        model: 'abab6.5-chat'
+    },
+    'custom': {
+        url: '',
+        model: ''
+    }
+};
+
+async function showSettingsModal() {
+    document.getElementById('settingsModal').classList.remove('hidden');
+    // 获取当前配置
+    try {
+        const response = await fetch(`${API_BASE}/api/settings`);
+        const settings = await response.json();
+
+        document.getElementById('settingBaseUrl').value = settings.llm_base_url || '';
+        document.getElementById('settingApiKey').value = settings.llm_api_key || '';
+        document.getElementById('settingModelName').value = settings.llm_model || '';
+
+        // 移除所有预设的激活状态
+        document.querySelectorAll('.btn-preset').forEach(btn => btn.classList.remove('active'));
+    } catch (error) {
+        console.error('加载设置失败:', error);
+    }
+}
+
+function hideSettingsModal() {
+    document.getElementById('settingsModal').classList.add('hidden');
+}
+
+function applyPreset(presetName) {
+    const preset = MODEL_PRESETS[presetName];
+    if (preset) {
+        document.getElementById('settingBaseUrl').value = preset.url;
+        document.getElementById('settingModelName').value = preset.model;
+
+        // 更新按钮样式
+        document.querySelectorAll('.btn-preset').forEach(btn => btn.classList.remove('active'));
+        if (typeof window !== 'undefined' && window.event && window.event.target) {
+            window.event.target.classList.add('active');
+        }
+    }
+}
+
+async function saveSettings() {
+    const baseUrl = document.getElementById('settingBaseUrl').value.trim();
+    const apiKey = document.getElementById('settingApiKey').value.trim();
+    const modelName = document.getElementById('settingModelName').value.trim();
+
+    if (!apiKey) {
+        showToast('API Key 不能为空', 'error');
+        return;
+    }
+
+    // 显示保存中...
+    const saveBtn = document.querySelector('#settingsModal .btn-primary');
+    const originalText = saveBtn.textContent;
+    saveBtn.textContent = '保存中...';
+    saveBtn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/api/settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                llm_base_url: baseUrl,
+                llm_api_key: apiKey,
+                llm_model: modelName
+            })
+        });
+
+        if (!response.ok) throw new Error('保存失败');
+
+        hideSettingsModal();
+        showToast('大模型配置保存成功，即刻生效！', 'success');
+    } catch (error) {
+        console.error('保存设置失败:', error);
+        showToast('保存配置失败，请检查网络重试', 'error');
+    } finally {
+        saveBtn.textContent = originalText;
+        saveBtn.disabled = false;
+    }
 }

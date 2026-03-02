@@ -1,12 +1,24 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mini-RAG 个人知识库</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- 引入现代化字体 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <link rel="stylesheet" href="/static/css/style.css?v=1.0.1">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- 引入 Marked.js 解析 Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
+
 <body>
     <div class="app-container">
         <!-- 侧边栏 -->
@@ -15,7 +27,7 @@
                 <h1><i class="fas fa-book-open"></i> Mini-RAG</h1>
                 <p class="subtitle">个人知识库</p>
             </div>
-            
+
             <!-- 统计信息 -->
             <div class="stats-card">
                 <div class="stat-item">
@@ -27,7 +39,7 @@
                     <span class="stat-label">标签</span>
                 </div>
             </div>
-            
+
             <!-- 标签列表 -->
             <div class="tags-section">
                 <h3><i class="fas fa-tags"></i> 标签</h3>
@@ -35,13 +47,19 @@
                     <!-- 动态加载 -->
                 </div>
             </div>
-            
+
             <!-- 新建文档按钮 -->
             <button class="btn-primary btn-new-doc" onclick="showDocModal()">
                 <i class="fas fa-plus"></i> 新建文档
             </button>
+
+            <!-- 设置按钮 -->
+            <button class="btn-secondary btn-settings" onclick="showSettingsModal()"
+                style="margin-top: 12px; width: 100%; padding: 14px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: #e2e8f0;">
+                <i class="fas fa-cog"></i> 模型配置
+            </button>
         </aside>
-        
+
         <!-- 主内容区 -->
         <main class="main-content">
             <!-- 搜索栏 -->
@@ -53,17 +71,18 @@
                 </div>
                 <div class="search-tabs">
                     <button class="tab-btn active" onclick="switchTab('documents')">
-                        <i class="fas fa-file-alt"></i> 文档列表
+                        <i class="fas fa-file-alt"></i> <span>文档列表</span>
                     </button>
                     <button class="tab-btn" onclick="switchTab('search')">
-                        <i class="fas fa-search"></i> 搜索结果
+                        <i class="fas fa-search"></i> <span>搜索结果</span>
                     </button>
-                    <button class="tab-btn" onclick="switchTab('qa')">
-                        <i class="fas fa-question-circle"></i> 智能问答
+                    <button class="tab-btn qa-special-btn" onclick="switchTab('qa')">
+                        <i class="fas fa-bolt"></i> <span>智能问答</span>
+                        <div class="qa-glow"></div>
                     </button>
                 </div>
             </div>
-            
+
             <!-- 文档列表 -->
             <div class="content-section" id="documentsSection">
                 <div class="section-header">
@@ -74,7 +93,7 @@
                     <!-- 动态加载 -->
                 </div>
             </div>
-            
+
             <!-- 搜索结果 -->
             <div class="content-section hidden" id="searchSection">
                 <div class="section-header">
@@ -85,7 +104,7 @@
                     <!-- 动态加载 -->
                 </div>
             </div>
-            
+
             <!-- 智能问答 -->
             <div class="content-section hidden" id="qaSection">
                 <div class="section-header">
@@ -110,7 +129,7 @@
             </div>
         </main>
     </div>
-    
+
     <!-- 文档模态框 -->
     <div class="modal hidden" id="docModal">
         <div class="modal-overlay" onclick="hideDocModal()"></div>
@@ -142,7 +161,7 @@
             </div>
         </div>
     </div>
-    
+
     <!-- 文档详情模态框 -->
     <div class="modal hidden" id="viewModal">
         <div class="modal-overlay" onclick="hideViewModal()"></div>
@@ -177,10 +196,54 @@
             </div>
         </div>
     </div>
-    
+
+    <!-- 设置模态框 -->
+    <div class="modal hidden" id="settingsModal">
+        <div class="modal-overlay" onclick="hideSettingsModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-cogs"></i> 大模型(LLM)引擎配置</h3>
+                <button class="btn-close" onclick="hideSettingsModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>推荐快捷预设 (快速填入厂商参数)</label>
+                    <div class="preset-buttons">
+                        <button class="btn-preset" onclick="applyPreset('deepseek')">DeepSeek</button>
+                        <button class="btn-preset" onclick="applyPreset('glm')">智谱 GLM</button>
+                        <button class="btn-preset" onclick="applyPreset('qwen')">阿里千问</button>
+                        <button class="btn-preset" onclick="applyPreset('minimax')">Minimax</button>
+                        <button class="btn-preset" onclick="applyPreset('custom')">自定义</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="settingBaseUrl">API Base URL</label>
+                    <input type="text" id="settingBaseUrl" placeholder="例如: https://api.deepseek.com/v1">
+                </div>
+                <div class="form-group">
+                    <label for="settingApiKey">API Key</label>
+                    <input type="password" id="settingApiKey" placeholder="填入您的 sk-xxxxxx">
+                </div>
+                <div class="form-group">
+                    <label for="settingModelName">模型标识 (Model)</label>
+                    <input type="text" id="settingModelName" placeholder="例如: deepseek-chat">
+                </div>
+                <p style="font-size: 12px; color: var(--text-secondary); margin-top: -10px;">提示：自定义模式可填入白山云代理等任意兼容
+                    OpenAI 接口标准的提供商信息。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="hideSettingsModal()">取消</button>
+                <button class="btn-primary" onclick="saveSettings()">验证并保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast 提示 -->
     <div class="toast hidden" id="toast"></div>
-    
-    <script src="/static/js/app.js"></script>
+
+    <script src="/static/js/app.js?v=1.0.4"></script>
 </body>
+
 </html>

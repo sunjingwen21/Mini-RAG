@@ -1,0 +1,12 @@
+.git
+.gitignore
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+data
+out.txt
+out2.txt
+out3.txt
+pip_out.txt

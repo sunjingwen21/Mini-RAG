@@ -26,6 +26,12 @@ HOST = "0.0.0.0"
 PORT = 8000
 DEBUG = True
 
+# LLM 配置 (OpenAI 兼容接口)
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+LLM_EMBEDDING_MODEL = os.getenv("LLM_EMBEDDING_MODEL", "text-embedding-3-small")
+
 # 分块配置
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50

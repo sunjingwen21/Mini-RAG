@@ -1,0 +1,16 @@
+services:
+  mini-rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini-rag
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-text-embedding-3-small}
+    restart: unless-stopped
