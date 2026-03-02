@@ -125,7 +125,7 @@ If you use `start.sh`, the script will:
 - install dependencies automatically if needed
 - refuse to start if `MINI_RAG_ADMIN_TOKEN` is not set
 
-`stop.py` is also Linux-only and uses `pkill` to stop the running service.
+`stop.sh` is the standard Linux stop script. `stop.py` remains available as an alternate helper, and both use `pkill` to stop the running service.
 
 ## Public Deployment Baseline
 

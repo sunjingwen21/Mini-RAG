@@ -125,7 +125,7 @@ LLM_MODEL=gpt-4o-mini
 - 在缺少依赖时安装依赖
 - 未配置 `MINI_RAG_ADMIN_TOKEN` 时拒绝启动
 
-`stop.py` 也只面向 Linux，内部使用 `pkill` 停止运行中的服务。
+`stop.sh` 是标准的 Linux 停止脚本。`stop.py` 仍可作为备用入口，二者都通过 `pkill` 停止运行中的服务。
 
 ## 公网部署最低建议
 

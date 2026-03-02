@@ -2,7 +2,7 @@
 
 一个轻量级的个人知识库系统，基于 RAG（检索增强生成）技术，支持文档管理、语义搜索和智能问答。
 
-当前仓库按 Linux 环境维护，开发和部署入口统一为 `start.sh` / `stop.py`。
+当前仓库按 Linux 环境维护，开发和部署入口统一为 `start.sh` / `stop.sh`。
 
 ## 功能特点
 
@@ -77,10 +77,10 @@ bash start.sh
 
 **方式二：命令行停止**
 ```bash
-python stop.py
+bash stop.sh
 ```
 
-`stop.py` 现在仅面向 Linux 环境，内部使用 `pkill` 停止服务进程。
+如果你需要，也可以继续使用 `python stop.py`；它同样基于 `pkill` 停止服务进程。
 
 ### 访问应用
 
