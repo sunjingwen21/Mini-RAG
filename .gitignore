@@ -45,6 +45,7 @@ temp/
 *.temp
 
 # Logs
+log/
 *.log
 
 # OS
