@@ -1,7 +1,7 @@
 """数据模型"""
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class DocumentCreate(BaseModel):
@@ -14,8 +14,8 @@ class DocumentCreate(BaseModel):
 class Document(DocumentCreate):
     """文档模型"""
     id: str = Field(..., description="文档ID")
-    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
-    updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="创建时间")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="更新时间")
 
 
 class DocumentResponse(BaseModel):

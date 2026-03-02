@@ -1,7 +1,7 @@
 """数据库管理"""
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
@@ -43,7 +43,7 @@ class DocumentStore:
     def create(self, doc_create: DocumentCreate) -> Document:
         """创建新文档"""
         doc_id = str(uuid.uuid4())
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         
         document = Document(
             id=doc_id,
@@ -79,7 +79,7 @@ class DocumentStore:
             content=doc_create.content,
             tags=doc_create.tags,
             created_at=existing.created_at,
-            updated_at=datetime.now()
+            updated_at=datetime.now(timezone.utc)
         )
         
         self._documents[doc_id] = document

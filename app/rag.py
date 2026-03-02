@@ -409,59 +409,89 @@ class RAGEngine:
     
     def generate_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """基于上下文生成答案"""
-        if not contexts:
-            return "抱歉，我在知识库中没有找到相关的信息来回答您的问题。"
-        
-        # 构建参考内容文本
-        context_texts = []
-        for i, ctx in enumerate(contexts, 1):
-            context_texts.append(f"【参考资料 {i}】标题: {ctx.title}\n内容: {ctx.content}")
-        
-        context_str = "\n\n".join(context_texts)
-        
         # 动态读取当前配置
         settings = settings_manager.get_settings()
         api_key = settings.get("llm_api_key", "")
         base_url = settings.get("llm_base_url", "")
         model_name = settings.get("llm_model", "gpt-3.5-turbo")
-        
+
         if api_key:
             try:
-                # 每次生成答案时动态初始化，以适应动态密钥切换
                 client = OpenAI(
                     api_key=api_key,
                     base_url=base_url if base_url else None
                 )
-                
-                # 使用 LLM 生成答案
-                system_prompt = (
-                    "你是一个专业、严谨且有用的个人知识库助手。"
-                    "请严格基于以下供参考的上下文信息来回答用户的问题。"
-                    "如果上下文信息不足以回答问题，请如实说明无法根据现有知识库回答，不要编造信息。"
-                    "重要排版与引用规则："
-                    "1. 必须使用 Markdown 格式(如加粗、列表、代码块)使回答结构清晰、层次分明、易于阅读。"
-                    "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
-                )
-                
-                user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
-                
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=2000
-                )
-                return response.choices[0].message.content
+
+                if contexts:
+                    return self._generate_contextual_answer(question, contexts, client, model_name)
+
+                return self._generate_general_answer(question, client, model_name)
             except Exception as e:
                 print(f"LLM 生成失败: {e}")
                 import traceback
                 traceback.print_exc()
-                return self._generate_fallback_answer(question, contexts)
-        else:
+                if contexts:
+                    return self._generate_fallback_answer(question, contexts)
+                return "知识库中没有找到相关信息，大模型调用也失败了，请稍后重试。"
+
+        if contexts:
             return self._generate_fallback_answer(question, contexts)
+
+        return "知识库中没有找到相关信息，且当前未配置大模型，无法继续基于通用知识回答。"
+
+    def _generate_contextual_answer(
+        self,
+        question: str,
+        contexts: List[SearchResult],
+        client: OpenAI,
+        model_name: str
+    ) -> str:
+        """知识库命中时，基于上下文生成回答。"""
+        context_texts = []
+        for i, ctx in enumerate(contexts, 1):
+            context_texts.append(f"【参考资料 {i}】标题: {ctx.title}\n内容: {ctx.content}")
+
+        context_str = "\n\n".join(context_texts)
+        system_prompt = (
+            "你是一个专业、严谨且有用的个人知识库助手。"
+            "请严格基于以下供参考的上下文信息来回答用户的问题。"
+            "如果上下文信息不足以回答问题，请如实说明无法根据现有知识库回答，不要编造信息。"
+            "重要排版与引用规则："
+            "1. 必须使用 Markdown 格式(如加粗、列表、代码块)使回答结构清晰、层次分明、易于阅读。"
+            "2. 当回答中参考了具体背景来源时，必须在引用的段落或句子末尾准确标注参考来源的编号，如 [1], [2] 等，以确保答案的严谨性。"
+        )
+        user_prompt = f"上下文信息：\n{context_str}\n\n用户问题：{question}"
+
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        return response.choices[0].message.content
+
+    def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> str:
+        """知识库未命中时，使用通用模型回答。"""
+        system_prompt = (
+            "你是一个有用的通用助手。"
+            "当前知识库没有命中相关内容。"
+            "请直接回答用户问题，但必须明确说明这次回答不是来自知识库，而是通用模型回答。"
+            "请使用清晰的 Markdown 格式。"
+        )
+
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        return response.choices[0].message.content
 
     def _generate_fallback_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """回退方案：如果未配置LLM或调用失败，返回简单的匹配结果"""

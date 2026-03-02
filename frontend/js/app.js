@@ -444,6 +444,10 @@ async function askQuestion() {
             body: JSON.stringify({ question, context_limit: 3 })
         });
 
+        if (!response.ok) {
+            throw new Error('问答请求失败');
+        }
+
         const data = await response.json();
 
         // 显示回答
@@ -513,9 +517,9 @@ function escapeHtml(text) {
 }
 
 function formatDate(dateString) {
-    const date = new Date(dateString);
+    const date = parseServerDate(dateString);
     const now = new Date();
-    const diff = now - date;
+    const diff = Math.max(0, now - date);
 
     // 一小时内
     if (diff < 3600000) {
@@ -541,6 +545,22 @@ function formatDate(dateString) {
         month: '2-digit',
         day: '2-digit'
     });
+}
+
+function parseServerDate(dateString) {
+    if (!dateString) {
+        return new Date();
+    }
+
+    const hasExplicitTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(dateString);
+    const normalized = hasExplicitTimezone ? dateString : `${dateString}Z`;
+    const parsed = new Date(normalized);
+
+    if (Number.isNaN(parsed.getTime())) {
+        return new Date(dateString);
+    }
+
+    return parsed;
 }
 
 function showToast(message, type = '') {
