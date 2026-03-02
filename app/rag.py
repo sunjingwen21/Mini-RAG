@@ -2,6 +2,7 @@
 import hashlib
 import math
 import re
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
@@ -150,11 +151,17 @@ class VectorStore:
     """向量存储管理"""
     
     def __init__(self):
-        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        try:
+            self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        except Exception as e:
+            print(f"检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: {e}")
+            shutil.rmtree(CHROMA_DIR, ignore_errors=True)
+            CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+            self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         self.embedding_function = self._build_embedding_function()
         self.collection = self._create_collection()
         self.splitter = TextSplitter()
-        # 内存缓存，避免 chromadb==0.4.15 查询缺陷直接影响问答结果
+        # 内存缓存可减少对底层查询实现差异的依赖，并让本地检索更稳定
         self._cache: Dict[str, Dict[str, Any]] = {}
 
     def _build_embedding_function(self) -> EmbeddingFunction:
