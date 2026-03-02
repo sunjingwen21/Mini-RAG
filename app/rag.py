@@ -1,5 +1,6 @@
 """RAG 核心逻辑"""
 import hashlib
+import logging
 import math
 import re
 import shutil
@@ -7,7 +8,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-from app.config import CHROMA_DIR, COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP, LLM_EMBEDDING_MODEL
+from app.config import (
+    CHROMA_DIR,
+    COLLECTION_NAME,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    LLM_EMBEDDING_MODEL,
+    LLM_TIMEOUT_SECONDS,
+    LLM_MAX_TOKENS_CONTEXT,
+    LLM_MAX_TOKENS_FALLBACK,
+)
 from app.models import Document, SearchResult
 from app.settings import settings_manager
 from openai import OpenAI
@@ -16,6 +26,8 @@ try:
     import jieba
 except Exception:
     jieba = None
+
+logger = logging.getLogger("minirag.rag")
 
 
 MATCH_STOPWORDS = {
@@ -160,7 +172,7 @@ class VectorStore:
         try:
             self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         except Exception as e:
-            print(f"检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: {e}")
+            logger.warning("检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: %s", e)
             shutil.rmtree(CHROMA_DIR, ignore_errors=True)
             CHROMA_DIR.mkdir(parents=True, exist_ok=True)
             self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
@@ -178,11 +190,11 @@ class VectorStore:
         embed_model = (settings.get("embedding_model") or "").strip()
 
         if not any([embed_api_key, embed_base_url, embed_model]):
-            print("未配置独立 Embedding 服务，使用本地分词哈希向量")
+            logger.info("未配置独立 Embedding 服务，使用本地分词哈希向量")
             return LocalHashEmbeddingFunction()
 
         if not embed_api_key:
-            print("Embedding API Key 未配置，使用本地分词哈希向量")
+            logger.warning("Embedding API Key 未配置，使用本地分词哈希向量")
             return LocalHashEmbeddingFunction()
 
         try:
@@ -192,10 +204,10 @@ class VectorStore:
                 model_name=embed_model or LLM_EMBEDDING_MODEL
             )
             candidate(["test"])
-            print("已启用远端 Embedding 服务")
+            logger.info("已启用远端 Embedding 服务")
             return candidate
         except Exception as e:
-            print(f"Embedding 服务不可用，转为本地分词哈希向量: {e}")
+            logger.warning("Embedding 服务不可用，转为本地分词哈希向量: %s", e)
             return LocalHashEmbeddingFunction()
 
     def _create_collection(self):
@@ -375,7 +387,8 @@ class RAGEngine:
     
     def __init__(self):
         self.vector_store = VectorStore()
-        # 将在此处移除固定客户端，改为在问答时动态初始化
+        self._llm_client = None
+        self._llm_client_cache_key: Tuple[str, str] = ("", "")
     
     def index_document(self, document: Document) -> int:
         """索引文档"""
@@ -412,6 +425,20 @@ class RAGEngine:
                 ))
         
         return search_results
+
+    def _get_llm_client(self, api_key: str, base_url: str) -> OpenAI:
+        cache_key = (api_key, base_url or "")
+        if self._llm_client is not None and self._llm_client_cache_key == cache_key:
+            return self._llm_client
+
+        self._llm_client = OpenAI(
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+        self._llm_client_cache_key = cache_key
+        logger.info("LLM client initialized for base_url=%s", base_url or "default")
+        return self._llm_client
     
     def generate_answer(self, question: str, contexts: List[SearchResult]) -> str:
         """基于上下文生成答案"""
@@ -423,17 +450,16 @@ class RAGEngine:
 
         if api_key:
             try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=base_url if base_url else None
-                )
+                client = self._get_llm_client(api_key, base_url)
 
                 if contexts:
+                    logger.info("Generating contextual answer with %d knowledge source(s)", len(contexts))
                     return self._generate_contextual_answer(question, contexts, client, model_name)
 
+                logger.info("Knowledge miss confirmed, using LLM general fallback")
                 return self._generate_general_answer(question, client, model_name)
             except Exception as e:
-                print(f"LLM 生成失败: {e}")
+                logger.exception("LLM 生成失败: %s", e)
                 import traceback
                 traceback.print_exc()
                 if contexts:
@@ -513,8 +539,8 @@ class RAGEngine:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7,
-            max_tokens=2000
+            temperature=0.2,
+            max_tokens=LLM_MAX_TOKENS_CONTEXT
         )
         return response.choices[0].message.content
 
@@ -533,8 +559,8 @@ class RAGEngine:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question}
             ],
-            temperature=0.7,
-            max_tokens=2000
+            temperature=0.2,
+            max_tokens=LLM_MAX_TOKENS_FALLBACK
         )
         return response.choices[0].message.content
 
@@ -562,16 +588,20 @@ class RAGEngine:
         has_model = bool((settings_manager.get_settings().get("llm_api_key") or "").strip())
 
         if knowledge_found:
+            logger.info("Knowledge hit for question=%r with %d source(s)", question, len(contexts))
             answer = self.generate_answer(question, contexts)
             return answer, contexts, True, False, False
 
         if has_model and not allow_model_fallback:
+            logger.info("Knowledge miss for question=%r, requesting user confirmation for model fallback", question)
             return "知识库并不包含相关资料，是否调用模型继续询问？", [], False, True, False
 
         if has_model and allow_model_fallback:
+            logger.info("User confirmed model fallback for question=%r", question)
             answer = self.generate_answer(question, [])
             return answer, [], False, False, True
 
+        logger.info("Knowledge miss for question=%r and no LLM configured", question)
         return "知识库不存在该资料。", [], False, False, False
 
 

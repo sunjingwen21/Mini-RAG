@@ -1,12 +1,13 @@
 """设置管理管理模块"""
 import json
-import os
+import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict
 
 from app.config import DATA_DIR, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
+logger = logging.getLogger("minirag.settings")
 
 class SettingsManager:
     def __init__(self):
@@ -39,9 +40,10 @@ class SettingsManager:
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=2)
+            logger.info("Settings saved to %s", self.settings_file)
             return True
         except Exception as e:
-            print(f"保存设置失败: {e}")
+            logger.exception("保存设置失败: %s", e)
             return False
 
     def get_settings(self) -> Dict[str, str]:
@@ -53,7 +55,7 @@ class SettingsManager:
                 defaults.update(data)
                 return defaults
         except Exception as e:
-            print(f"读取设置失败: {e}")
+            logger.exception("读取设置失败: %s", e)
             # 返回默认环境变量
             return self._default_settings()
 
@@ -66,7 +68,7 @@ class SettingsManager:
             current_settings.update(settings)
             return self._write_settings(current_settings)
         except Exception as e:
-            print(f"保存设置失败: {e}")
+            logger.exception("保存设置失败: %s", e)
             return False
 
 # 单例模式

@@ -1,5 +1,6 @@
 """数据库管理"""
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -8,6 +9,7 @@ from pathlib import Path
 from app.config import DOCS_DIR
 from app.models import Document, DocumentCreate
 
+logger = logging.getLogger("minirag.database")
 
 class DocumentStore:
     """文档存储管理"""
@@ -33,6 +35,7 @@ class DocumentStore:
                     for doc_id, doc_data in data.items()
                 }
         except (json.JSONDecodeError, KeyError):
+            logger.warning("Documents file is invalid, starting with an empty store: %s", self.docs_file)
             self._documents = {}
     
     def _save_to_file(self, data: Dict):
@@ -56,6 +59,7 @@ class DocumentStore:
         
         self._documents[doc_id] = document
         self._persist()
+        logger.info("Document created: id=%s title=%s", document.id, document.title)
         
         return document
     
@@ -84,6 +88,7 @@ class DocumentStore:
         
         self._documents[doc_id] = document
         self._persist()
+        logger.info("Document updated: id=%s title=%s", document.id, document.title)
         
         return document
     
@@ -94,6 +99,7 @@ class DocumentStore:
         
         del self._documents[doc_id]
         self._persist()
+        logger.info("Document deleted: id=%s", doc_id)
         
         return True
     
