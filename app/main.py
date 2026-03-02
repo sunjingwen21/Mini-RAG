@@ -1,6 +1,9 @@
 """FastAPI 主应用"""
+import hashlib
 import logging
 import secrets
+import time
+from collections import defaultdict
 from typing import List
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
@@ -17,9 +20,18 @@ from pydantic import BaseModel
 from app.database import document_store
 from app.settings import settings_manager
 from app.rag import rag_engine
-from app.config import ADMIN_TOKEN, CORS_ORIGINS, DEBUG
+from app.config import (
+    ADMIN_TOKEN,
+    AUTH_BLOCK_SECONDS,
+    AUTH_FAILURE_WINDOW_SECONDS,
+    AUTH_MAX_FAILURES,
+    CORS_ORIGINS,
+    DEBUG,
+)
 
 logger = logging.getLogger("minirag.api")
+auth_failures = defaultdict(list)
+auth_blocked_until = {}
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -45,29 +57,140 @@ app.add_middleware(
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
+def _get_client_ip(request: Request) -> str:
+    """尽量获取真实客户端 IP。"""
+    for header_name in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
+        header_value = (request.headers.get(header_name) or "").strip()
+        if not header_value:
+            continue
+        if header_name == "x-forwarded-for":
+            return header_value.split(",")[0].strip()
+        return header_value
+
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _token_fingerprint(token: str) -> str:
+    """记录令牌指纹，避免日志泄露明文。"""
+    if not token:
+        return "missing"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _prune_auth_tracking(now_ts: float, client_ip: str) -> List[float]:
+    """清理窗口外的失败记录，并返回当前 IP 的有效失败列表。"""
+    failures = [
+        ts for ts in auth_failures.get(client_ip, [])
+        if now_ts - ts <= AUTH_FAILURE_WINDOW_SECONDS
+    ]
+    if failures:
+        auth_failures[client_ip] = failures
+    elif client_ip in auth_failures:
+        del auth_failures[client_ip]
+
+    blocked_until = auth_blocked_until.get(client_ip)
+    if blocked_until and blocked_until <= now_ts:
+        del auth_blocked_until[client_ip]
+
+    return failures
+
+
 @app.middleware("http")
 async def require_admin_token(request: Request, call_next):
     """保护所有 API 路由。"""
     if request.url.path.startswith("/api/"):
+        client_ip = _get_client_ip(request)
+        user_agent = (request.headers.get("user-agent") or "").strip()
+        now_ts = time.time()
         provided_token = (
             request.headers.get("x-admin-token")
             or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         )
+        token_fp = _token_fingerprint(provided_token)
+
+        _prune_auth_tracking(now_ts, client_ip)
+
+        blocked_until = auth_blocked_until.get(client_ip)
+        if blocked_until and blocked_until > now_ts:
+            remaining_seconds = int(blocked_until - now_ts)
+            logger.warning(
+                "Blocked API request during auth cooldown: ip=%s method=%s path=%s token_fp=%s user_agent=%r remaining_seconds=%s",
+                client_ip,
+                request.method,
+                request.url.path,
+                token_fp,
+                user_agent,
+                remaining_seconds,
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "认证失败次数过多，请稍后重试"}
+            )
 
         if not ADMIN_TOKEN:
-            logger.error("Rejected API request because MINI_RAG_ADMIN_TOKEN is not configured: path=%s", request.url.path)
+            logger.error(
+                "Rejected API request because MINI_RAG_ADMIN_TOKEN is not configured: ip=%s method=%s path=%s user_agent=%r",
+                client_ip,
+                request.method,
+                request.url.path,
+                user_agent,
+            )
             return JSONResponse(
                 status_code=500,
                 content={"detail": "服务端未配置 MINI_RAG_ADMIN_TOKEN"}
             )
 
         if not provided_token or not secrets.compare_digest(provided_token, ADMIN_TOKEN):
-            logger.warning("Unauthorized API request rejected: path=%s", request.url.path)
+            failures = auth_failures[client_ip]
+            failures.append(now_ts)
+            failure_count = len(failures)
+
+            if failure_count >= AUTH_MAX_FAILURES:
+                auth_blocked_until[client_ip] = now_ts + AUTH_BLOCK_SECONDS
+                logger.error(
+                    "Auth rate limit triggered: ip=%s method=%s path=%s token_fp=%s user_agent=%r failure_count=%s window_seconds=%s block_seconds=%s",
+                    client_ip,
+                    request.method,
+                    request.url.path,
+                    token_fp,
+                    user_agent,
+                    failure_count,
+                    AUTH_FAILURE_WINDOW_SECONDS,
+                    AUTH_BLOCK_SECONDS,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "认证失败次数过多，请稍后重试"}
+                )
+
+            logger.warning(
+                "Unauthorized API request rejected: ip=%s method=%s path=%s token_fp=%s user_agent=%r failure_count=%s remaining_before_block=%s",
+                client_ip,
+                request.method,
+                request.url.path,
+                token_fp,
+                user_agent,
+                failure_count,
+                max(AUTH_MAX_FAILURES - failure_count, 0),
+            )
             return JSONResponse(
                 status_code=401,
                 content={"detail": "未授权访问"},
                 headers={"WWW-Authenticate": "Bearer"}
             )
+
+        if client_ip in auth_failures or client_ip in auth_blocked_until:
+            logger.info(
+                "Successful API authentication after prior failures: ip=%s method=%s path=%s user_agent=%r",
+                client_ip,
+                request.method,
+                request.url.path,
+                user_agent,
+            )
+            auth_failures.pop(client_ip, None)
+            auth_blocked_until.pop(client_ip, None)
 
     return await call_next(request)
 
@@ -232,18 +355,20 @@ async def search_documents(request: SearchRequest):
 @app.post("/api/ask", response_model=AnswerResponse, summary="智能问答")
 async def ask_question(request: QuestionRequest):
     """基于知识库进行问答"""
-    answer, sources, knowledge_found, needs_model_confirmation, used_model_fallback = rag_engine.ask(
+    answer, sources, knowledge_found, needs_model_confirmation, used_model_fallback, model_name, answer_truncated = rag_engine.ask(
         request.question,
         context_limit=request.context_limit,
         allow_model_fallback=request.allow_model_fallback
     )
     logger.info(
-        "API ask_question question=%r sources=%d knowledge_found=%s needs_confirm=%s used_model_fallback=%s",
+        "API ask_question question=%r sources=%d knowledge_found=%s needs_confirm=%s used_model_fallback=%s model_name=%s answer_truncated=%s",
         request.question,
         len(sources),
         knowledge_found,
         needs_model_confirmation,
         used_model_fallback,
+        model_name or "-",
+        answer_truncated,
     )
     
     return AnswerResponse(
@@ -252,7 +377,9 @@ async def ask_question(request: QuestionRequest):
         sources=sources,
         knowledge_found=knowledge_found,
         needs_model_confirmation=needs_model_confirmation,
-        used_model_fallback=used_model_fallback
+        used_model_fallback=used_model_fallback,
+        model_name=model_name,
+        answer_truncated=answer_truncated
     )
 
 

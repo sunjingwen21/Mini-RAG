@@ -441,7 +441,7 @@ class RAGEngine:
         logger.info("LLM client initialized for base_url=%s", base_url or "default")
         return self._llm_client
     
-    def generate_answer(self, question: str, contexts: List[SearchResult]) -> str:
+    def generate_answer(self, question: str, contexts: List[SearchResult]) -> Tuple[str, str, bool]:
         """基于上下文生成答案"""
         # 动态读取当前配置
         settings = settings_manager.get_settings()
@@ -455,20 +455,22 @@ class RAGEngine:
 
                 if contexts:
                     logger.info("Generating contextual answer with %d knowledge source(s)", len(contexts))
-                    return self._generate_contextual_answer(question, contexts, client, model_name)
+                    answer, answer_truncated = self._generate_contextual_answer(question, contexts, client, model_name)
+                    return answer, model_name, answer_truncated
 
                 logger.info("Knowledge miss confirmed, using LLM general fallback")
-                return self._generate_general_answer(question, client, model_name)
+                answer, answer_truncated = self._generate_general_answer(question, client, model_name)
+                return answer, model_name, answer_truncated
             except Exception as e:
                 logger.exception("LLM 生成失败: %s", e)
                 if contexts:
-                    return self._generate_fallback_answer(question, contexts)
-                return "知识库中没有找到相关信息，大模型调用也失败了，请稍后重试。"
+                    return self._generate_fallback_answer(question, contexts), "", False
+                return "知识库中没有找到相关信息，大模型调用也失败了，请稍后重试。", "", False
 
         if contexts:
-            return self._generate_fallback_answer(question, contexts)
+            return self._generate_fallback_answer(question, contexts), "", False
 
-        return "知识库中没有找到相关信息，且当前未配置大模型，无法继续基于通用知识回答。"
+        return "知识库中没有找到相关信息，且当前未配置大模型，无法继续基于通用知识回答。", "", False
 
     def _tokenize_for_match(self, text: str) -> List[str]:
         normalized = (text or "").lower().strip()
@@ -528,7 +530,7 @@ class RAGEngine:
         messages: List[Dict[str, str]],
         max_tokens: int,
         log_label: str
-    ) -> str:
+    ) -> Tuple[str, bool]:
         """执行一次对话补全，并在长度截断时自动续写一次。"""
         started_at = time.perf_counter()
         response = client.chat.completions.create(
@@ -551,7 +553,7 @@ class RAGEngine:
         )
 
         if finish_reason != "length":
-            return content
+            return content, False
 
         logger.warning(
             "LLM %s completion hit max_tokens=%d and was truncated, requesting one continuation",
@@ -590,14 +592,13 @@ class RAGEngine:
         merged_content = self._merge_completion_text(content, continuation_content)
         if continuation_finish_reason == "length":
             logger.warning(
-                "LLM %s continuation also hit max_tokens=%d; returning truncated content with notice",
+                "LLM %s continuation also hit max_tokens=%d; returning still-truncated content",
                 log_label,
                 max_tokens,
             )
-            notice = "\n\n[回答达到长度上限，内容可能未完整生成。请缩小问题范围，或在 .env 中提高 LLM_MAX_TOKENS_* 配置。]"
-            return f"{merged_content.rstrip()}{notice}"
+            return merged_content, True
 
-        return merged_content
+        return merged_content, False
 
     def _generate_contextual_answer(
         self,
@@ -605,7 +606,7 @@ class RAGEngine:
         contexts: List[SearchResult],
         client: OpenAI,
         model_name: str
-    ) -> str:
+    ) -> Tuple[str, bool]:
         """知识库命中时，基于上下文生成回答。"""
         context_texts = []
         for i, ctx in enumerate(contexts, 1):
@@ -632,7 +633,7 @@ class RAGEngine:
             "contextual",
         )
 
-    def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> str:
+    def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> Tuple[str, bool]:
         """知识库未命中时，使用通用模型回答。"""
         system_prompt = (
             "你是一个有用的通用助手。"
@@ -668,7 +669,7 @@ class RAGEngine:
         question: str,
         context_limit: int = 3,
         allow_model_fallback: bool = False
-    ) -> Tuple[str, List[SearchResult], bool, bool, bool]:
+    ) -> Tuple[str, List[SearchResult], bool, bool, bool, str, bool]:
         """问答功能"""
         contexts = self.vector_store.get_context_for_question(question, limit=context_limit)
         knowledge_found = self._has_knowledge_hit(question, contexts)
@@ -676,20 +677,20 @@ class RAGEngine:
 
         if knowledge_found:
             logger.info("Knowledge hit for question=%r with %d source(s)", question, len(contexts))
-            answer = self.generate_answer(question, contexts)
-            return answer, contexts, True, False, False
+            answer, model_name, answer_truncated = self.generate_answer(question, contexts)
+            return answer, contexts, True, False, False, model_name, answer_truncated
 
         if has_model and not allow_model_fallback:
             logger.info("Knowledge miss for question=%r, requesting user confirmation for model fallback", question)
-            return "知识库并不包含相关资料，是否调用模型继续询问？", [], False, True, False
+            return "知识库并不包含相关资料，是否调用模型继续询问？", [], False, True, False, "", False
 
         if has_model and allow_model_fallback:
             logger.info("User confirmed model fallback for question=%r", question)
-            answer = self.generate_answer(question, [])
-            return answer, [], False, False, True
+            answer, model_name, answer_truncated = self.generate_answer(question, [])
+            return answer, [], False, False, True, model_name, answer_truncated
 
         logger.info("Knowledge miss for question=%r and no LLM configured", question)
-        return "知识库不存在该资料。", [], False, False, False
+        return "知识库不存在该资料。", [], False, False, False, "", False
 
 
 # 全局 RAG 引擎实例

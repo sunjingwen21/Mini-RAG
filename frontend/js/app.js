@@ -440,6 +440,7 @@ async function askQuestion() {
     }
 
     const qaAnswer = document.getElementById('qaAnswer');
+    const answerMeta = document.getElementById('answerMeta');
     const answerContent = document.getElementById('answerContent');
     const sourcesList = document.getElementById('sourcesList');
     const originalButtonHtml = askButton ? askButton.innerHTML : '';
@@ -451,6 +452,8 @@ async function askQuestion() {
     }
 
     qaAnswer.classList.remove('hidden');
+    answerMeta.classList.add('hidden');
+    answerMeta.innerHTML = '';
     answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在思考...</div>';
     sourcesList.innerHTML = '';
 
@@ -464,14 +467,20 @@ async function askQuestion() {
             );
 
             if (shouldContinue) {
+                answerMeta.classList.add('hidden');
+                answerMeta.innerHTML = '';
                 answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在调用模型...</div>';
                 data = await requestAnswer(question, true);
             } else {
+                answerMeta.classList.add('hidden');
+                answerMeta.innerHTML = '';
                 answerContent.innerHTML = '<p style="color: var(--text-secondary);">知识库不存在该资料。</p>';
                 sourcesList.innerHTML = '<p style="color: var(--text-secondary);">暂无参考来源</p>';
                 return;
             }
         }
+
+        renderAnswerMeta(data);
 
         // 显示回答
         answerContent.innerHTML = formatAnswer(data.answer);
@@ -497,6 +506,34 @@ async function askQuestion() {
             askButton.innerHTML = originalButtonHtml;
         }
     }
+}
+
+function renderAnswerMeta(data) {
+    const answerMeta = document.getElementById('answerMeta');
+    const items = [];
+
+    if (data.used_model_fallback) {
+        items.push('<span class="answer-meta-badge answer-meta-fallback">本次为通用模型回答</span>');
+    } else if (data.knowledge_found) {
+        items.push('<span class="answer-meta-badge answer-meta-knowledge">本次基于知识库回答</span>');
+    }
+
+    if (data.model_name) {
+        items.push(`<span class="answer-meta-badge">调用模型：${escapeHtml(data.model_name)}</span>`);
+    }
+
+    if (data.answer_truncated) {
+        items.push('<span class="answer-meta-badge answer-meta-warning">回答较长，当前结果可能仍未完整</span>');
+    }
+
+    if (items.length === 0) {
+        answerMeta.classList.add('hidden');
+        answerMeta.innerHTML = '';
+        return;
+    }
+
+    answerMeta.innerHTML = items.join('');
+    answerMeta.classList.remove('hidden');
 }
 
 async function requestAnswer(question, allowModelFallback = false) {

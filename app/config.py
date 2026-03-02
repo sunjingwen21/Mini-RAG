@@ -45,6 +45,9 @@ CORS_ORIGINS = [
     for origin in os.getenv("MINI_RAG_CORS_ORIGINS", "").split(",")
     if origin.strip()
 ]
+AUTH_FAILURE_WINDOW_SECONDS = int(os.getenv("MINI_RAG_AUTH_FAILURE_WINDOW_SECONDS", "300"))
+AUTH_MAX_FAILURES = int(os.getenv("MINI_RAG_AUTH_MAX_FAILURES", "8"))
+AUTH_BLOCK_SECONDS = int(os.getenv("MINI_RAG_AUTH_BLOCK_SECONDS", "900"))
 
 # LLM 配置 (OpenAI 兼容接口)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
