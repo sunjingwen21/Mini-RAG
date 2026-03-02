@@ -223,12 +223,19 @@ async def search_documents(request: SearchRequest):
 @app.post("/api/ask", response_model=AnswerResponse, summary="智能问答")
 async def ask_question(request: QuestionRequest):
     """基于知识库进行问答"""
-    answer, sources = rag_engine.ask(request.question, context_limit=request.context_limit)
+    answer, sources, knowledge_found, needs_model_confirmation, used_model_fallback = rag_engine.ask(
+        request.question,
+        context_limit=request.context_limit,
+        allow_model_fallback=request.allow_model_fallback
+    )
     
     return AnswerResponse(
         question=request.question,
         answer=answer,
-        sources=sources
+        sources=sources,
+        knowledge_found=knowledge_found,
+        needs_model_confirmation=needs_model_confirmation,
+        used_model_fallback=used_model_fallback
     )
 
 

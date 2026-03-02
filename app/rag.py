@@ -18,6 +18,12 @@ except Exception:
     jieba = None
 
 
+MATCH_STOPWORDS = {
+    "什么", "是", "吗", "呢", "啊", "呀", "的", "了", "和", "与", "及", "请", "一下",
+    "介绍", "一下子", "请问", "how", "what", "is", "are", "the", "a", "an"
+}
+
+
 class TextSplitter:
     """文本分块器"""
     
@@ -439,6 +445,45 @@ class RAGEngine:
 
         return "知识库中没有找到相关信息，且当前未配置大模型，无法继续基于通用知识回答。"
 
+    def _tokenize_for_match(self, text: str) -> List[str]:
+        normalized = (text or "").lower().strip()
+        if not normalized:
+            return []
+
+        if jieba is not None:
+            raw_tokens = [token.strip().lower() for token in jieba.lcut(normalized) if token.strip()]
+        else:
+            raw_tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", normalized)
+
+        filtered = []
+        for token in raw_tokens:
+            if token in MATCH_STOPWORDS:
+                continue
+            if re.fullmatch(r"[a-z0-9_]+", token) and len(token) <= 1:
+                continue
+            filtered.append(token)
+        return filtered
+
+    def _has_knowledge_hit(self, question: str, contexts: List[SearchResult]) -> bool:
+        """用关键词重叠判断知识库是否真的命中，避免低分误命中。"""
+        if not contexts:
+            return False
+
+        query_tokens = self._tokenize_for_match(question)
+        if not query_tokens:
+            return bool(contexts)
+
+        context_text = "\n".join(f"{ctx.title}\n{ctx.content}" for ctx in contexts).lower()
+        context_tokens = set(self._tokenize_for_match(context_text))
+
+        for token in query_tokens:
+            if token in context_tokens:
+                return True
+            if len(token) > 1 and token in context_text:
+                return True
+
+        return False
+
     def _generate_contextual_answer(
         self,
         question: str,
@@ -505,11 +550,29 @@ class RAGEngine:
         
         return "".join(answer_parts)
     
-    def ask(self, question: str, context_limit: int = 3) -> Tuple[str, List[SearchResult]]:
+    def ask(
+        self,
+        question: str,
+        context_limit: int = 3,
+        allow_model_fallback: bool = False
+    ) -> Tuple[str, List[SearchResult], bool, bool, bool]:
         """问答功能"""
         contexts = self.vector_store.get_context_for_question(question, limit=context_limit)
-        answer = self.generate_answer(question, contexts)
-        return answer, contexts
+        knowledge_found = self._has_knowledge_hit(question, contexts)
+        has_model = bool((settings_manager.get_settings().get("llm_api_key") or "").strip())
+
+        if knowledge_found:
+            answer = self.generate_answer(question, contexts)
+            return answer, contexts, True, False, False
+
+        if has_model and not allow_model_fallback:
+            return "知识库并不包含相关资料，是否调用模型继续询问？", [], False, True, False
+
+        if has_model and allow_model_fallback:
+            answer = self.generate_answer(question, [])
+            return answer, [], False, False, True
+
+        return "知识库不存在该资料。", [], False, False, False
 
 
 # 全局 RAG 引擎实例

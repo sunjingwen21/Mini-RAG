@@ -438,17 +438,20 @@ async function askQuestion() {
     sourcesList.innerHTML = '';
 
     try {
-        const response = await apiFetch('/api/ask', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, context_limit: 3 })
-        });
+        let data = await requestAnswer(question, false);
 
-        if (!response.ok) {
-            throw new Error('问答请求失败');
+        if (data.needs_model_confirmation) {
+            const shouldContinue = confirm('知识库并不包含相关资料，是否调用模型继续询问？');
+
+            if (shouldContinue) {
+                answerContent.innerHTML = '<div class="loading"><i class="fas fa-spinner"></i> 正在调用模型...</div>';
+                data = await requestAnswer(question, true);
+            } else {
+                answerContent.innerHTML = '<p style="color: var(--text-secondary);">知识库不存在该资料。</p>';
+                sourcesList.innerHTML = '<p style="color: var(--text-secondary);">暂无参考来源</p>';
+                return;
+            }
         }
-
-        const data = await response.json();
 
         // 显示回答
         answerContent.innerHTML = formatAnswer(data.answer);
@@ -468,6 +471,24 @@ async function askQuestion() {
         console.error('问答失败:', error);
         answerContent.innerHTML = '<p style="color: var(--danger-color);">问答失败，请稍后重试</p>';
     }
+}
+
+async function requestAnswer(question, allowModelFallback = false) {
+    const response = await apiFetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            question,
+            context_limit: 3,
+            allow_model_fallback: allowModelFallback
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('问答请求失败');
+    }
+
+    return response.json();
 }
 
 function formatAnswer(answer) {

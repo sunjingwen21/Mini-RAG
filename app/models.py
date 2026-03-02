@@ -47,6 +47,7 @@ class QuestionRequest(BaseModel):
     """问答请求"""
     question: str = Field(..., min_length=1, description="问题内容")
     context_limit: int = Field(default=3, ge=1, le=10, description="上下文文档数量")
+    allow_model_fallback: bool = Field(default=False, description="知识库未命中时是否允许调用通用模型")
 
 
 class AnswerResponse(BaseModel):
@@ -54,6 +55,9 @@ class AnswerResponse(BaseModel):
     question: str
     answer: str
     sources: List[SearchResult] = Field(default=[], description="参考来源")
+    knowledge_found: bool = Field(default=True, description="知识库是否命中相关资料")
+    needs_model_confirmation: bool = Field(default=False, description="是否需要用户确认调用模型")
+    used_model_fallback: bool = Field(default=False, description="是否已使用通用模型回答")
 
 
 class DocumentListResponse(BaseModel):
