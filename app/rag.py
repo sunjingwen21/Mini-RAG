@@ -463,10 +463,16 @@ class RAGEngine:
                 if contexts:
                     logger.info("Generating contextual answer with %d knowledge source(s)", len(contexts))
                     answer, answer_truncated = self._generate_contextual_answer(question, contexts, client, model_name)
+                    if not answer.strip():
+                        logger.warning("LLM contextual answer was empty, falling back to knowledge extract")
+                        return self._generate_fallback_answer(question, contexts), "", False
                     return answer, model_name, answer_truncated
 
                 logger.info("Knowledge miss confirmed, using LLM general fallback")
                 answer, answer_truncated = self._generate_general_answer(question, client, model_name)
+                if not answer.strip():
+                    logger.warning("LLM general fallback answer was empty")
+                    return "模型未返回可展示内容，请稍后重试。", "", False
                 return answer, model_name, answer_truncated
             except Exception as e:
                 logger.exception("LLM 生成失败: %s", e)
@@ -530,6 +536,42 @@ class RAGEngine:
 
         return f"{first_part}\n{second_part}"
 
+    def _coerce_content_text(self, value: Any) -> str:
+        """尽量从兼容 OpenAI 的多种 content 结构中提取可展示文本。"""
+        if value is None:
+            return ""
+
+        if isinstance(value, str):
+            return value.strip()
+
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                text = self._coerce_content_text(item)
+                if text:
+                    parts.append(text)
+            return "\n".join(parts).strip()
+
+        if isinstance(value, dict):
+            for key in ("text", "content", "output_text", "value"):
+                text = self._coerce_content_text(value.get(key))
+                if text:
+                    return text
+            return ""
+
+        for attr in ("text", "content", "output_text", "value"):
+            text = self._coerce_content_text(getattr(value, attr, None))
+            if text:
+                return text
+
+        return ""
+
+    def _extract_message_text(self, message: Any) -> str:
+        """从 SDK message 对象中提取最终回答文本。"""
+        if message is None:
+            return ""
+        return self._coerce_content_text(getattr(message, "content", None))
+
     def _create_chat_completion(
         self,
         client: OpenAI,
@@ -576,7 +618,7 @@ class RAGEngine:
 
             choice = response.choices[0] if response.choices else None
             message = getattr(choice, "message", None)
-            chunk = (getattr(message, "content", None) or "").strip()
+            chunk = self._extract_message_text(message)
             finish_reason = getattr(choice, "finish_reason", None)
 
             logger.info(
@@ -586,6 +628,13 @@ class RAGEngine:
                 elapsed,
                 finish_reason or "unknown",
             )
+
+            if not chunk:
+                logger.warning(
+                    "LLM %s completion round=%d returned empty content payload",
+                    log_label,
+                    round_index + 1,
+                )
 
             content = self._merge_completion_text(content, chunk)
 
