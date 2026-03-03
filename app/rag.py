@@ -442,6 +442,7 @@ class RAGEngine:
             api_key=api_key,
             base_url=base_url if base_url else None,
             timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=0,
         )
         self._llm_client_cache_key = cache_key
         logger.info("LLM client initialized for base_url=%s", base_url or "default")
@@ -535,21 +536,42 @@ class RAGEngine:
         model_name: str,
         messages: List[Dict[str, str]],
         max_tokens: int,
-        log_label: str
+        log_label: str,
+        max_continuations: Optional[int] = None,
     ) -> Tuple[str, bool]:
         """执行对话补全，并在长度截断时自动续写多次。"""
         current_messages = list(messages)
         content = ""
         was_truncated = False
+        allowed_continuations = LLM_MAX_CONTINUATIONS if max_continuations is None else max(0, max_continuations)
 
-        for round_index in range(LLM_MAX_CONTINUATIONS + 1):
+        for round_index in range(allowed_continuations + 1):
             started_at = time.perf_counter()
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=current_messages,
-                temperature=0.2,
-                max_tokens=max_tokens
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=current_messages,
+                    temperature=0.2,
+                    max_tokens=max_tokens
+                )
+            except Exception as exc:
+                elapsed = time.perf_counter() - started_at
+                logger.warning(
+                    "LLM %s completion round=%d failed after %.2fs: %s",
+                    log_label,
+                    round_index + 1,
+                    elapsed,
+                    exc,
+                )
+                if content:
+                    logger.warning(
+                        "LLM %s returning partial content after downstream failure on round=%d",
+                        log_label,
+                        round_index + 1,
+                    )
+                    return content, True
+                raise
+
             elapsed = time.perf_counter() - started_at
 
             choice = response.choices[0] if response.choices else None
@@ -572,11 +594,11 @@ class RAGEngine:
 
             was_truncated = True
 
-            if round_index >= LLM_MAX_CONTINUATIONS:
+            if round_index >= allowed_continuations:
                 logger.warning(
                     "LLM %s still truncated after %d continuation round(s); returning partial content",
                     log_label,
-                    LLM_MAX_CONTINUATIONS,
+                    allowed_continuations,
                 )
                 return content, True
 
@@ -628,6 +650,7 @@ class RAGEngine:
             ],
             LLM_MAX_TOKENS_CONTEXT,
             "contextual",
+            1,
         )
 
     def _generate_general_answer(self, question: str, client: OpenAI, model_name: str) -> Tuple[str, bool]:
