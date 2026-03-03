@@ -10,6 +10,7 @@ const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 let currentDocId = null;
 let isDeletingDocument = false;
 let isAskingQuestion = false;
+let documentsLoadSequence = 0;
 let authModalResolver = null;
 let confirmModalResolver = null;
 
@@ -150,12 +151,57 @@ function filterByTag(tag) {
 
 // ==================== 文档管理 ====================
 
-async function loadDocuments() {
+function renderDocumentsErrorState(message = '加载文档失败，请重试') {
+    const documentsList = document.getElementById('documentsList');
+    documentsList.innerHTML = `
+        <div class="empty-state">
+            <i class="fas fa-exclamation-circle"></i>
+            <p>${escapeHtml(message)}</p>
+            <button class="btn-secondary" style="margin-top: 12px;" onclick="loadDocuments()">重试</button>
+        </div>
+    `;
+}
+
+async function loadDocuments(retryCount = 0) {
+    const requestId = ++documentsLoadSequence;
+    const documentsList = document.getElementById('documentsList');
+
+    if (retryCount === 0) {
+        documentsList.innerHTML = `
+            <div class="loading">
+                <i class="fas fa-spinner"></i>
+                <p>正在加载文档...</p>
+            </div>
+        `;
+    }
+
     try {
         const response = await apiFetch('/api/documents?limit=50');
+        if (!response.ok) {
+            throw new Error(`加载失败(${response.status})`);
+        }
         const data = await response.json();
+        const isValidPayload = typeof data.total === 'number' && Array.isArray(data.documents);
 
-        const documentsList = document.getElementById('documentsList');
+        if (!isValidPayload) {
+            throw new Error('接口返回格式异常');
+        }
+
+        if (requestId !== documentsLoadSequence) {
+            console.warn('忽略过期的文档列表响应');
+            return;
+        }
+
+        if (data.total > 0 && data.documents.length === 0 && retryCount < 1) {
+            console.warn('文档总数大于 0，但当前列表为空，自动重试一次', data);
+            setTimeout(() => {
+                if (requestId === documentsLoadSequence) {
+                    loadDocuments(retryCount + 1);
+                }
+            }, 300);
+            return;
+        }
+
         document.getElementById('docCount').textContent = `共 ${data.total} 篇文档`;
 
         if (data.documents.length === 0) {
@@ -182,6 +228,10 @@ async function loadDocuments() {
         `).join('');
     } catch (error) {
         console.error('加载文档失败:', error);
+        if (requestId !== documentsLoadSequence) {
+            return;
+        }
+        renderDocumentsErrorState('文档列表加载失败，请点击重试');
         showToast('加载文档失败', 'error');
     }
 }

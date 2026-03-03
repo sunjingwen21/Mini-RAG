@@ -18,6 +18,7 @@ from app.config import (
     LLM_TIMEOUT_SECONDS,
     LLM_MAX_TOKENS_CONTEXT,
     LLM_MAX_TOKENS_FALLBACK,
+    LLM_MAX_CONTINUATIONS,
 )
 from app.models import Document, SearchResult
 from app.settings import settings_manager
@@ -531,74 +532,65 @@ class RAGEngine:
         max_tokens: int,
         log_label: str
     ) -> Tuple[str, bool]:
-        """执行一次对话补全，并在长度截断时自动续写一次。"""
-        started_at = time.perf_counter()
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=max_tokens
-        )
-        elapsed = time.perf_counter() - started_at
+        """执行对话补全，并在长度截断时自动续写多次。"""
+        current_messages = list(messages)
+        content = ""
+        was_truncated = False
 
-        choice = response.choices[0] if response.choices else None
-        message = getattr(choice, "message", None)
-        content = (getattr(message, "content", None) or "").strip()
-        finish_reason = getattr(choice, "finish_reason", None)
-        logger.info(
-            "LLM %s completion finished in %.2fs (finish_reason=%s)",
-            log_label,
-            elapsed,
-            finish_reason or "unknown",
-        )
+        for round_index in range(LLM_MAX_CONTINUATIONS + 1):
+            started_at = time.perf_counter()
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=current_messages,
+                temperature=0.2,
+                max_tokens=max_tokens
+            )
+            elapsed = time.perf_counter() - started_at
 
-        if finish_reason != "length":
-            return content, False
+            choice = response.choices[0] if response.choices else None
+            message = getattr(choice, "message", None)
+            chunk = (getattr(message, "content", None) or "").strip()
+            finish_reason = getattr(choice, "finish_reason", None)
 
-        logger.warning(
-            "LLM %s completion hit max_tokens=%d and was truncated, requesting one continuation",
-            log_label,
-            max_tokens,
-        )
+            logger.info(
+                "LLM %s completion round=%d finished in %.2fs (finish_reason=%s)",
+                log_label,
+                round_index + 1,
+                elapsed,
+                finish_reason or "unknown",
+            )
 
-        continuation_messages = messages + [
-            {"role": "assistant", "content": content},
-            {
-                "role": "user",
-                "content": "请从刚才中断的位置继续回答，不要重复已经输出的内容，直接续写并完整结束。"
-            }
-        ]
+            content = self._merge_completion_text(content, chunk)
 
-        started_at = time.perf_counter()
-        continuation_response = client.chat.completions.create(
-            model=model_name,
-            messages=continuation_messages,
-            temperature=0.2,
-            max_tokens=max_tokens
-        )
-        continuation_elapsed = time.perf_counter() - started_at
+            if finish_reason != "length":
+                return content, was_truncated
 
-        continuation_choice = continuation_response.choices[0] if continuation_response.choices else None
-        continuation_message = getattr(continuation_choice, "message", None)
-        continuation_content = (getattr(continuation_message, "content", None) or "").strip()
-        continuation_finish_reason = getattr(continuation_choice, "finish_reason", None)
-        logger.info(
-            "LLM %s continuation finished in %.2fs (finish_reason=%s)",
-            log_label,
-            continuation_elapsed,
-            continuation_finish_reason or "unknown",
-        )
+            was_truncated = True
 
-        merged_content = self._merge_completion_text(content, continuation_content)
-        if continuation_finish_reason == "length":
+            if round_index >= LLM_MAX_CONTINUATIONS:
+                logger.warning(
+                    "LLM %s still truncated after %d continuation round(s); returning partial content",
+                    log_label,
+                    LLM_MAX_CONTINUATIONS,
+                )
+                return content, True
+
             logger.warning(
-                "LLM %s continuation also hit max_tokens=%d; returning still-truncated content",
+                "LLM %s hit max_tokens=%d on round=%d, requesting continuation",
                 log_label,
                 max_tokens,
+                round_index + 1,
             )
-            return merged_content, True
 
-        return merged_content, False
+            current_messages = current_messages + [
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": "请从刚才中断的位置继续回答，不要重复已经输出的内容。优先补全当前未说完的句子，并尽量简洁收束。"
+                }
+            ]
+
+        return content, was_truncated
 
     def _generate_contextual_answer(
         self,
@@ -640,6 +632,7 @@ class RAGEngine:
             "当前知识库没有命中相关内容。"
             "请直接回答用户问题，但必须明确说明这次回答不是来自知识库，而是通用模型回答。"
             "请使用清晰的 Markdown 格式。"
+            "除非用户明确要求详细展开，否则默认用简洁、直接的方式回答，优先给出定义或结论，再补充 2 到 4 个关键点。"
         )
         return self._create_chat_completion(
             client,
