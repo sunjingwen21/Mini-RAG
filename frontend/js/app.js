@@ -4,7 +4,8 @@
 
 // API 基础地址
 const API_BASE = '';
-const AUTH_STORAGE_KEY = 'mini_rag_admin_token';
+const SESSION_STORAGE_KEY = 'mini_rag_session';
+const LEGACY_AUTH_STORAGE_KEY = 'mini_rag_admin_token';
 
 // 当前查看的文档 ID
 let currentDocId = null;
@@ -17,6 +18,8 @@ let confirmModalResolver = null;
 // ==================== 初始化 ====================
 
 document.addEventListener('DOMContentLoaded', async () => {
+    migrateLegacyAuthState();
+    applyTenantInfo(getStoredSession());
     const authenticated = await ensureAuthenticated();
     if (!authenticated) {
         return;
@@ -27,32 +30,124 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadDocuments();
 });
 
-function getAdminToken() {
-    return localStorage.getItem(AUTH_STORAGE_KEY) || '';
+function migrateLegacyAuthState() {
+    if (localStorage.getItem(LEGACY_AUTH_STORAGE_KEY)) {
+        localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
+        console.info('已清理旧版访问令牌缓存，改为使用会话模式');
+    }
 }
 
-function setAdminToken(token) {
-    localStorage.setItem(AUTH_STORAGE_KEY, token);
+function getAdminToken() {
+    const session = getStoredSession();
+    if (!session || isSessionExpired(session)) {
+        clearAdminToken();
+        return '';
+    }
+    return session.session_token || '';
+}
+
+function getStoredSession() {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) {
+        return null;
+    }
+
+    try {
+        const session = JSON.parse(raw);
+        if (!session || typeof session !== 'object') {
+            throw new Error('invalid session payload');
+        }
+        return session;
+    } catch (error) {
+        console.error('会话数据损坏，已清理:', error);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+    }
+}
+
+function setAdminToken(session) {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    applyTenantInfo(session);
 }
 
 function clearAdminToken() {
-    localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    applyTenantInfo(null);
 }
 
-function showAuthModal(force = false) {
+function isSessionExpired(session) {
+    if (!session || !session.expires_at) {
+        return true;
+    }
+
+    const expiresAt = new Date(session.expires_at);
+    return Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now();
+}
+
+function applyTenantInfo(session) {
+    const subtitle = document.getElementById('tenantSubtitle');
+    if (!subtitle) {
+        return;
+    }
+
+    if (session && session.tenant_name) {
+        subtitle.textContent = `当前租户：${session.tenant_name}`;
+        return;
+    }
+
+    subtitle.textContent = '个人知识库';
+}
+
+async function loadTenantOptions(selectedTenantId = '') {
+    const datalist = document.getElementById('authTenantOptions');
+    if (!datalist) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/api/auth/tenants`);
+        if (!response.ok) {
+            throw new Error(`加载租户失败(${response.status})`);
+        }
+        const tenants = await response.json();
+        datalist.innerHTML = tenants.map(tenant => (
+            `<option value="${escapeHtml(tenant.id)}">${escapeHtml(tenant.name)}</option>`
+        )).join('');
+
+        const tenantInput = document.getElementById('authTenantIdInput');
+        if (tenantInput && !tenantInput.value && tenants.length === 1) {
+            tenantInput.value = tenants[0].id;
+        } else if (tenantInput && selectedTenantId) {
+            tenantInput.value = selectedTenantId;
+        }
+    } catch (error) {
+        console.error('加载租户列表失败:', error);
+    }
+}
+
+async function showAuthModal(force = false) {
     const modal = document.getElementById('authModal');
     const message = document.getElementById('authModalMessage');
     const input = document.getElementById('authTokenInput');
+    const tenantInput = document.getElementById('authTenantIdInput');
     const title = document.getElementById('authModalTitle');
-    const currentToken = force ? '' : getAdminToken();
+    const currentSession = force ? null : getStoredSession();
 
-    title.textContent = force ? '访问令牌失效' : '输入访问令牌';
-    message.textContent = force ? '访问令牌无效，请重新输入。' : '请输入访问令牌以继续访问知识库。';
-    input.value = currentToken;
+    title.textContent = force ? '会话已失效' : '租户登录';
+    message.textContent = force ? '会话已失效，请重新输入租户和访问令牌。' : '请输入租户 ID 和访问令牌以继续访问知识库。';
+    input.value = '';
+    tenantInput.value = currentSession?.tenant_id || '';
+    await loadTenantOptions(currentSession?.tenant_id || '');
 
     modal.classList.remove('hidden');
 
-    setTimeout(() => input.focus(), 0);
+    setTimeout(() => {
+        if (tenantInput.value) {
+            input.focus();
+        } else {
+            tenantInput.focus();
+        }
+    }, 0);
 
     return new Promise(resolve => {
         authModalResolver = resolve;
@@ -60,33 +155,34 @@ function showAuthModal(force = false) {
 }
 
 async function ensureAuthenticated(force = false) {
-    let token = getAdminToken();
-    if (!token || force) {
-        token = await showAuthModal(force);
+    let session = getStoredSession();
+    if (!session || isSessionExpired(session) || force) {
+        session = await showAuthModal(force);
     }
-    return Boolean(token);
+    return Boolean(session && !isSessionExpired(session));
 }
 
 function changeAuthToken() {
-    showAuthModal(true).then(token => {
-        if (token) {
-            showToast('访问令牌已更新', 'success');
+    showAuthModal(true).then(session => {
+        if (session) {
+            showToast('租户会话已更新', 'success');
         }
     });
 }
 
 async function apiFetch(path, options = {}, retry = true) {
-    let token = getAdminToken();
-    if (!token) {
+    let session = getStoredSession();
+    if (!session || isSessionExpired(session)) {
+        clearAdminToken();
         const authenticated = await ensureAuthenticated();
         if (!authenticated) {
-            throw new Error('未提供访问令牌');
+            throw new Error('未登录或会话已过期');
         }
-        token = getAdminToken();
+        session = getStoredSession();
     }
 
     const headers = new Headers(options.headers || {});
-    headers.set('X-Admin-Token', token);
+    headers.set('Authorization', `Bearer ${session.session_token}`);
 
     const response = await fetch(`${API_BASE}${path}`, {
         ...options,
@@ -109,10 +205,16 @@ async function apiFetch(path, options = {}, retry = true) {
 async function loadStats() {
     try {
         const response = await apiFetch('/api/stats');
+        if (!response.ok) {
+            throw new Error(`加载失败(${response.status})`);
+        }
         const data = await response.json();
 
         document.getElementById('totalDocs').textContent = data.total_documents;
         document.getElementById('totalTags').textContent = data.total_tags;
+        applyTenantInfo(getStoredSession() || {
+            tenant_name: data.tenant_name || '个人知识库'
+        });
     } catch (error) {
         console.error('加载统计信息失败:', error);
     }
@@ -123,6 +225,9 @@ async function loadStats() {
 async function loadTags() {
     try {
         const response = await apiFetch('/api/tags');
+        if (!response.ok) {
+            throw new Error(`加载失败(${response.status})`);
+        }
         const tags = await response.json();
 
         const tagsList = document.getElementById('tagsList');
@@ -199,6 +304,13 @@ async function loadDocuments(retryCount = 0) {
                     loadDocuments(retryCount + 1);
                 }
             }, 300);
+            return;
+        }
+
+        if (data.total > 0 && data.documents.length === 0) {
+            console.error('文档列表数据异常：总数大于 0，但返回列表为空', data);
+            renderDocumentsErrorState('文档数据异常，请刷新页面或检查服务日志');
+            showToast('文档数据异常', 'error');
             return;
         }
 
@@ -321,7 +433,7 @@ async function saveDocument() {
         }
 
         if (!response.ok) {
-            throw new Error('保存失败');
+            throw new Error(`保存失败(${response.status})`);
         }
 
         hideDocModal();
@@ -436,6 +548,9 @@ async function performSearch() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, limit: 10 })
         });
+        if (!response.ok) {
+            throw new Error(`搜索失败(${response.status})`);
+        }
 
         const results = await response.json();
 
@@ -802,40 +917,69 @@ async function saveSettings() {
 }
 
 function submitAuthModal() {
+    const tenantInput = document.getElementById('authTenantIdInput');
     const input = document.getElementById('authTokenInput');
+    const tenantId = tenantInput.value.trim();
     const token = input.value.trim();
 
-    if (!token) {
-        clearAdminToken();
+    if (!tenantId || !token) {
+        showToast('请填写租户 ID 和访问令牌', 'error');
+        return;
+    }
+
+    const confirmButton = document.querySelector('#authModal .btn-primary');
+    const originalText = confirmButton.textContent;
+    confirmButton.disabled = true;
+    confirmButton.textContent = '登录中...';
+
+    fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            tenant_id: tenantId,
+            access_token: token
+        })
+    }).then(async response => {
+        if (!response.ok) {
+            let detail = '登录失败';
+            try {
+                const data = await response.json();
+                detail = data.detail || detail;
+            } catch (error) {
+                console.error('读取登录错误失败:', error);
+            }
+            throw new Error(detail);
+        }
+        return response.json();
+    }).then(session => {
+        setAdminToken(session);
         if (authModalResolver) {
             const resolve = authModalResolver;
             authModalResolver = null;
             hideAuthModal();
-            resolve('');
+            resolve(session);
         }
-        return;
-    }
-
-    setAdminToken(token);
-    if (authModalResolver) {
-        const resolve = authModalResolver;
-        authModalResolver = null;
-        hideAuthModal();
-        resolve(token);
-    }
+    }).catch(error => {
+        console.error('登录失败:', error);
+        showToast(error.message || '登录失败', 'error');
+    }).finally(() => {
+        confirmButton.disabled = false;
+        confirmButton.textContent = originalText;
+    });
 }
 
 function cancelAuthModal() {
     if (authModalResolver) {
         const resolve = authModalResolver;
         authModalResolver = null;
-        hideAuthModal();
-        resolve('');
+        resolve(null);
     }
+    hideAuthModal();
 }
 
 function hideAuthModal() {
     document.getElementById('authModal').classList.add('hidden');
+    document.getElementById('authTokenInput').value = '';
 }
 
 function handleAuthTokenKey(event) {

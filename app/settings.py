@@ -10,8 +10,9 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 logger = logging.getLogger("minirag.settings")
 
 class SettingsManager:
-    def __init__(self):
-        self.settings_file = SETTINGS_FILE
+    def __init__(self, settings_file: Path = SETTINGS_FILE):
+        self.settings_file = settings_file
+        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_file_exists()
 
     def _ensure_file_exists(self):

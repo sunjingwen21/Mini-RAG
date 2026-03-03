@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+from pydantic import ValidationError
 
 from app.config import DOCS_DIR
 from app.models import Document, DocumentCreate
@@ -14,8 +15,9 @@ logger = logging.getLogger("minirag.database")
 class DocumentStore:
     """文档存储管理"""
     
-    def __init__(self):
-        self.docs_file = DOCS_DIR / "documents.json"
+    def __init__(self, docs_file: Optional[Path] = None):
+        self.docs_file = docs_file or (DOCS_DIR / "documents.json")
+        self.docs_file.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_file()
         self._documents: Dict[str, Document] = {}
         self._load_documents()
@@ -30,11 +32,27 @@ class DocumentStore:
         try:
             with open(self.docs_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self._documents = {
-                    doc_id: Document(**doc_data) 
-                    for doc_id, doc_data in data.items()
-                }
-        except (json.JSONDecodeError, KeyError):
+                loaded_documents: Dict[str, Document] = {}
+                invalid_count = 0
+
+                if isinstance(data, dict):
+                    items = data.items()
+                elif isinstance(data, list):
+                    items = ((item.get("id", str(index)), item) for index, item in enumerate(data) if isinstance(item, dict))
+                else:
+                    raise ValueError("unexpected documents payload type")
+
+                for doc_id, doc_data in items:
+                    try:
+                        loaded_documents[doc_id] = Document(**doc_data)
+                    except (ValidationError, TypeError, ValueError) as exc:
+                        invalid_count += 1
+                        logger.warning("Skipping invalid document entry: file=%s doc_id=%s error=%s", self.docs_file, doc_id, exc)
+
+                self._documents = loaded_documents
+                if invalid_count:
+                    logger.warning("Loaded documents with %d invalid record(s) skipped: %s", invalid_count, self.docs_file)
+        except (json.JSONDecodeError, KeyError, ValueError, OSError):
             logger.warning("Documents file is invalid, starting with an empty store: %s", self.docs_file)
             self._documents = {}
     

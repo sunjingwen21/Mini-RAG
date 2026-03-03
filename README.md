@@ -29,7 +29,8 @@ pip install -r requirements.txt
 
 ### 安全配置（必需）
 
-项目现在默认要求管理员令牌，未配置时不会启动。
+项目现在默认要求租户访问令牌，未配置时不会启动。最简单的方式是先用
+`MINI_RAG_ADMIN_TOKEN` 自动创建一个 `default` 默认租户。
 
 1. 复制环境变量模板
 
@@ -54,10 +55,11 @@ MINI_RAG_CORS_ORIGINS=http://localhost:8000
 说明:
 - `start.sh` 会自动读取项目根目录的 `.env`
 - `start.sh` 会以后台方式启动服务，并把日志统一写到 `log/`
-- 浏览器第一次打开页面时，会提示输入这个访问令牌
+- 浏览器第一次打开页面时，会提示输入租户 ID 和访问令牌；如果只配置了 `MINI_RAG_ADMIN_TOKEN`，默认租户 ID 就是 `default`
 - 公网部署时，把 `MINI_RAG_CORS_ORIGINS` 改成你的实际域名，例如 `https://rag.example.com`
 - 更完整的配置说明见 `docs/CONFIGURATION.md`
 - 中文配置说明见 `docs/CONFIGURATION.zh-CN.md`
+- 默认会话有效期是 1 小时，可通过 `MINI_RAG_SESSION_TTL_SECONDS` 调整
 
 ### 启动服务
 
@@ -95,7 +97,42 @@ bash stop.sh
 
 打开浏览器访问 http://localhost:8000
 
-首次访问会要求输入 `.env` 中配置的 `MINI_RAG_ADMIN_TOKEN`。
+首次访问会要求输入租户 ID 和访问令牌。只使用默认租户时，租户 ID 填 `default`，
+访问令牌就是 `.env` 中配置的 `MINI_RAG_ADMIN_TOKEN`。
+
+## 多租户数据存储
+
+多租户采用文件隔离，每个租户独立存放文档、向量索引和模型配置。
+
+- 租户注册表：`data/tenants/tenants.json`
+- 会话数据：`data/sessions.json`
+- 每个租户的文档：`data/tenants/<tenant_id>/documents/documents.json`
+- 每个租户的模型配置：`data/tenants/<tenant_id>/settings.json`
+- 每个租户的向量库：`data/tenants/<tenant_id>/chroma/`
+
+`tenants.json` 的最小格式示例：
+
+```json
+{
+  "default": {
+    "id": "default",
+    "name": "默认租户",
+    "enabled": true,
+    "token_hash": "把访问令牌做 sha256 后填这里",
+    "created_at": "2026-03-03T00:00:00+00:00"
+  }
+}
+```
+
+如果你原来是单租户模式，首次访问 `default` 租户时，旧数据会自动迁移到
+`data/tenants/default/` 下。
+
+也可以直接用脚本管理租户：
+
+```bash
+python manage_tenants.py add team-a "团队 A" "这里填团队访问令牌"
+python manage_tenants.py list
+```
 
 ## 项目结构
 

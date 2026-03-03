@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
@@ -21,7 +22,7 @@ from app.config import (
     LLM_MAX_CONTINUATIONS,
 )
 from app.models import Document, SearchResult
-from app.settings import settings_manager
+from app.settings import SettingsManager, settings_manager
 from openai import OpenAI
 
 try:
@@ -170,14 +171,17 @@ class LocalHashEmbeddingFunction(EmbeddingFunction):
 class VectorStore:
     """向量存储管理"""
     
-    def __init__(self):
+    def __init__(self, chroma_dir: Optional[str] = None, settings_provider: Optional[SettingsManager] = None):
+        self.chroma_dir = str(chroma_dir) if chroma_dir else str(CHROMA_DIR)
+        self.settings_provider = settings_provider or settings_manager
         try:
-            self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            self.client = chromadb.PersistentClient(path=self.chroma_dir)
         except Exception as e:
             logger.warning("检测到旧版或损坏的 Chroma 索引，正在重建本地向量库: %s", e)
-            shutil.rmtree(CHROMA_DIR, ignore_errors=True)
-            CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-            self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            chroma_path = Path(self.chroma_dir)
+            shutil.rmtree(chroma_path, ignore_errors=True)
+            chroma_path.mkdir(parents=True, exist_ok=True)
+            self.client = chromadb.PersistentClient(path=self.chroma_dir)
         self.embedding_function = self._build_embedding_function()
         self.collection = self._create_collection()
         self.splitter = TextSplitter()
@@ -186,7 +190,7 @@ class VectorStore:
 
     def _build_embedding_function(self) -> EmbeddingFunction:
         """优先使用独立配置的 Embedding 服务；未配置时使用本地向量。"""
-        settings = settings_manager.get_settings()
+        settings = self.settings_provider.get_settings()
         embed_api_key = (settings.get("embedding_api_key") or "").strip()
         embed_base_url = (settings.get("embedding_base_url") or "").strip()
         embed_model = (settings.get("embedding_model") or "").strip()
@@ -387,8 +391,9 @@ class VectorStore:
 class RAGEngine:
     """RAG 引擎"""
     
-    def __init__(self):
-        self.vector_store = VectorStore()
+    def __init__(self, vector_store: Optional[VectorStore] = None, settings_provider: Optional[SettingsManager] = None):
+        self.settings_provider = settings_provider or settings_manager
+        self.vector_store = vector_store or VectorStore(settings_provider=self.settings_provider)
         self._llm_client = None
         self._llm_client_cache_key: Tuple[str, str] = ("", "")
     
@@ -445,7 +450,7 @@ class RAGEngine:
     def generate_answer(self, question: str, contexts: List[SearchResult]) -> Tuple[str, str, bool]:
         """基于上下文生成答案"""
         # 动态读取当前配置
-        settings = settings_manager.get_settings()
+        settings = self.settings_provider.get_settings()
         api_key = settings.get("llm_api_key", "")
         base_url = settings.get("llm_base_url", "")
         model_name = settings.get("llm_model", "gpt-3.5-turbo")
@@ -666,7 +671,7 @@ class RAGEngine:
         """问答功能"""
         contexts = self.vector_store.get_context_for_question(question, limit=context_limit)
         knowledge_found = self._has_knowledge_hit(question, contexts)
-        has_model = bool((settings_manager.get_settings().get("llm_api_key") or "").strip())
+        has_model = bool((self.settings_provider.get_settings().get("llm_api_key") or "").strip())
 
         if knowledge_found:
             logger.info("Knowledge hit for question=%r with %d source(s)", question, len(contexts))

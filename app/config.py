@@ -18,12 +18,16 @@ DATA_DIR = BASE_DIR / "data"
 CHROMA_DIR = DATA_DIR / "chroma"
 DOCS_DIR = DATA_DIR / "documents"
 LOG_DIR = BASE_DIR / "log"
+TENANTS_DIR = DATA_DIR / "tenants"
+TENANT_REGISTRY_FILE = TENANTS_DIR / "tenants.json"
+SESSIONS_FILE = DATA_DIR / "sessions.json"
 
 # 确保目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+TENANTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 向量数据库配置
 COLLECTION_NAME = "knowledge_base"
@@ -48,6 +52,7 @@ CORS_ORIGINS = [
 AUTH_FAILURE_WINDOW_SECONDS = int(os.getenv("MINI_RAG_AUTH_FAILURE_WINDOW_SECONDS", "300"))
 AUTH_MAX_FAILURES = int(os.getenv("MINI_RAG_AUTH_MAX_FAILURES", "8"))
 AUTH_BLOCK_SECONDS = int(os.getenv("MINI_RAG_AUTH_BLOCK_SECONDS", "900"))
+SESSION_TTL_SECONDS = int(os.getenv("MINI_RAG_SESSION_TTL_SECONDS", "3600"))
 
 # LLM 配置 (OpenAI 兼容接口)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
