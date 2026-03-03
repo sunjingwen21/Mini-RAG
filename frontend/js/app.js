@@ -677,7 +677,9 @@ function renderAnswerMeta(data) {
     const answerMeta = document.getElementById('answerMeta');
     const messages = [];
 
-    if (data.used_model_fallback) {
+    if (data.used_local_fallback) {
+        messages.push('本次为知识库直接提取回答（大模型未返回有效结果）');
+    } else if (data.used_model_fallback) {
         const modelSuffix = data.model_name ? `（模型：${data.model_name}）` : '';
         messages.push(`本次为通用模型回答${modelSuffix}`);
     } else if (data.knowledge_found) {

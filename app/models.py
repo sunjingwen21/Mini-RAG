@@ -58,6 +58,7 @@ class AnswerResponse(BaseModel):
     knowledge_found: bool = Field(default=True, description="知识库是否命中相关资料")
     needs_model_confirmation: bool = Field(default=False, description="是否需要用户确认调用模型")
     used_model_fallback: bool = Field(default=False, description="是否已使用通用模型回答")
+    used_local_fallback: bool = Field(default=False, description="是否回退为知识库直接提取回答")
     model_name: str = Field(default="", description="本次实际调用的模型名称")
     answer_truncated: bool = Field(default=False, description="回答是否仍可能被长度上限截断")
 

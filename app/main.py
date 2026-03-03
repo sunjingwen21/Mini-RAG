@@ -492,19 +492,20 @@ async def search_documents(request: Request, payload: SearchRequest):
 @app.post("/api/ask", response_model=AnswerResponse, summary="智能问答")
 async def ask_question(request: Request, payload: QuestionRequest):
     context = _get_tenant_context(request)
-    answer, sources, knowledge_found, needs_model_confirmation, used_model_fallback, model_name, answer_truncated = context.rag_engine.ask(
+    answer, sources, knowledge_found, needs_model_confirmation, used_model_fallback, used_local_fallback, model_name, answer_truncated = context.rag_engine.ask(
         payload.question,
         context_limit=payload.context_limit,
         allow_model_fallback=payload.allow_model_fallback,
     )
     logger.info(
-        "API ask_question tenant_id=%s question=%r sources=%d knowledge_found=%s needs_confirm=%s used_model_fallback=%s model_name=%s answer_truncated=%s",
+        "API ask_question tenant_id=%s question=%r sources=%d knowledge_found=%s needs_confirm=%s used_model_fallback=%s used_local_fallback=%s model_name=%s answer_truncated=%s",
         context.tenant_id,
         payload.question,
         len(sources),
         knowledge_found,
         needs_model_confirmation,
         used_model_fallback,
+        used_local_fallback,
         model_name or "-",
         answer_truncated,
     )
@@ -515,6 +516,7 @@ async def ask_question(request: Request, payload: QuestionRequest):
         knowledge_found=knowledge_found,
         needs_model_confirmation=needs_model_confirmation,
         used_model_fallback=used_model_fallback,
+        used_local_fallback=used_local_fallback,
         model_name=model_name,
         answer_truncated=answer_truncated,
     )
