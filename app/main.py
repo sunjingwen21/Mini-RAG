@@ -3,6 +3,7 @@ import hashlib
 import logging
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -103,6 +104,12 @@ def _fingerprint(value: str) -> str:
     if not value:
         return "missing"
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _to_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _prune_auth_tracking(now_ts: float, client_ip: str) -> List[float]:
@@ -376,7 +383,7 @@ async def list_documents(
     if tag:
         all_docs = [doc for doc in all_docs if tag in doc.tags]
 
-    all_docs.sort(key=lambda x: x.updated_at, reverse=True)
+    all_docs.sort(key=lambda x: _to_utc_datetime(x.updated_at), reverse=True)
     total = len(all_docs)
     docs = all_docs[skip:skip + limit]
 

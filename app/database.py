@@ -26,6 +26,13 @@ class DocumentStore:
         """确保文档文件存在"""
         if not self.docs_file.exists():
             self._save_to_file({})
+
+    @staticmethod
+    def _ensure_utc_datetime(value: datetime) -> datetime:
+        """把无时区时间统一补成 UTC，避免 naive/aware 混用。"""
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
     
     def _load_documents(self):
         """从文件加载文档"""
@@ -34,6 +41,7 @@ class DocumentStore:
                 data = json.load(f)
                 loaded_documents: Dict[str, Document] = {}
                 invalid_count = 0
+                normalized_count = 0
 
                 if isinstance(data, dict):
                     items = data.items()
@@ -44,7 +52,23 @@ class DocumentStore:
 
                 for doc_id, doc_data in items:
                     try:
-                        loaded_documents[doc_id] = Document(**doc_data)
+                        document = Document(**doc_data)
+                        normalized_created_at = self._ensure_utc_datetime(document.created_at)
+                        normalized_updated_at = self._ensure_utc_datetime(document.updated_at)
+
+                        if (
+                            normalized_created_at != document.created_at
+                            or normalized_updated_at != document.updated_at
+                        ):
+                            normalized_count += 1
+                            document = document.model_copy(
+                                update={
+                                    "created_at": normalized_created_at,
+                                    "updated_at": normalized_updated_at,
+                                }
+                            )
+
+                        loaded_documents[doc_id] = document
                     except (ValidationError, TypeError, ValueError) as exc:
                         invalid_count += 1
                         logger.warning("Skipping invalid document entry: file=%s doc_id=%s error=%s", self.docs_file, doc_id, exc)
@@ -52,6 +76,13 @@ class DocumentStore:
                 self._documents = loaded_documents
                 if invalid_count:
                     logger.warning("Loaded documents with %d invalid record(s) skipped: %s", invalid_count, self.docs_file)
+                if normalized_count:
+                    logger.info(
+                        "Normalized %d legacy document timestamp(s) to UTC: %s",
+                        normalized_count,
+                        self.docs_file,
+                    )
+                    self._persist()
         except (json.JSONDecodeError, KeyError, ValueError, OSError):
             logger.warning("Documents file is invalid, starting with an empty store: %s", self.docs_file)
             self._documents = {}
@@ -137,8 +168,8 @@ class DocumentStore:
                 'title': doc.title,
                 'content': doc.content,
                 'tags': doc.tags,
-                'created_at': doc.created_at.isoformat(),
-                'updated_at': doc.updated_at.isoformat()
+                'created_at': self._ensure_utc_datetime(doc.created_at).isoformat(),
+                'updated_at': self._ensure_utc_datetime(doc.updated_at).isoformat()
             }
             for doc_id, doc in self._documents.items()
         }
